@@ -1,0 +1,6 @@
+name: tps-counter
+version: "1.0.0"
+description: "Tracks tokens-per-second (TPS) throughput for LLM calls. Shows per-call and session-average TPS after each turn."
+author: ryan
+hooks:
+  - post_api_request
