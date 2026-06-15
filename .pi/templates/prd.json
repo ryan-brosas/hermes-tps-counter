@@ -1,0 +1,17 @@
+{
+  "bead_id": "[bead-id]",
+  "type": "[task|bug|feature|epic|chore]",
+  "priority": 2,
+  "estimate_minutes": 60,
+  "requirements": [
+    {
+      "id": 1,
+      "text": "[requirement description]",
+      "priority": "MUST",
+      "acceptance": "[measurable done-state]"
+    }
+  ],
+  "success_criteria": [
+    "[specific, measurable outcome]"
+  ]
+}
