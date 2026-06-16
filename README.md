@@ -59,6 +59,43 @@ else:
     snapshot["tps_label"] = ""
 ```
 
+### Stale / Session-Mismatch Handling
+
+Every `_tps_snapshot` includes freshness metadata that consumers can use to suppress stale or cross-session TPS values:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `updated_at` | `float` | Wall-clock time (`time.time()`) when the snapshot was created. Useful for logging and diagnostics. |
+| `updated_monotonic` | `float` | Monotonic time (`time.monotonic()`) when the snapshot was created. Use this for robust age calculations that survive system clock changes. |
+| `session_id` | `str` | The session that produced this snapshot. Compare against the active session to detect cross-session data leakage. |
+
+**Recommended stale-threshold behavior** — consumers should compare `time.monotonic() - snapshot["updated_monotonic"]` against a configurable threshold (e.g. 30–120 seconds). If the age exceeds the threshold, suppress or gray-out the TPS display rather than showing potentially stale data.
+
+**Recommended session-mismatch behavior** — if `snapshot["session_id"]` does not match the active session identifier, consumers should ignore or reset the TPS display.
+
+**Example with freshness checks:**
+
+```python
+import time
+
+tps = getattr(agent, "_tps_snapshot", None)
+if tps:
+    age = time.monotonic() - tps.get("updated_monotonic", 0)
+    session_match = tps.get("session_id") == active_session_id
+    if age < STALE_THRESHOLD and session_match:
+        tps_val = tps.get("last_tps", 0)
+        if tps_val > 0:
+            snapshot["tps_label"] = f"⚡{tps_val:.0f} tok/s"
+        else:
+            snapshot["tps_label"] = ""
+    else:
+        snapshot["tps_label"] = ""  # Suppress stale or mismatched data
+else:
+    snapshot["tps_label"] = ""
+```
+
+All freshness fields are **additive and backward compatible** — existing consumers that do not read them will continue to work unchanged. The stale-threshold value is implementation-defined and should be tuned to match the consumer's rendering cadence and acceptable staleness window.
+
 ### 4. `cli.py` — Render TPS in status bar fragments
 
 In `_get_status_bar_fragments()`, wide variant (>=76 cols), after the model_short fragment:
