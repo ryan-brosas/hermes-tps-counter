@@ -85,28 +85,31 @@ class TestMetricDefinitions:
     def test_session_gauges_registered(self):
         from prometheus_metrics import REGISTRY
         names = {m.name for m in REGISTRY.collect()}
-        assert "tps_last_call" in names
-        assert "tps_avg" in names
-        assert "tps_peak" in names
+        # Aggregate gauges are always registered (no session_id label by default)
+        assert "tps_last_call_aggregate" in names
+        assert "tps_avg_aggregate" in names
+        assert "tps_peak_aggregate" in names
 
     def test_counters_registered(self):
         from prometheus_metrics import REGISTRY
         names = {m.name for m in REGISTRY.collect()}
-        # prometheus_client strips _total suffix from collected counter names
-        assert "tps_tokens" in names
-        assert "tps_api_calls" in names
+        # Aggregate counters are always registered
+        assert "tps_tokens_total_aggregate" in names
+        assert "tps_api_calls_total_aggregate" in names
 
     def test_model_gauges_registered(self):
         from prometheus_metrics import REGISTRY
         names = {m.name for m in REGISTRY.collect()}
-        assert "tps_model_avg" in names
-        assert "tps_model_peak" in names
+        # Aggregate per-model gauges (model label only, no session_id)
+        assert "tps_model_avg_aggregate" in names
+        assert "tps_model_peak_aggregate" in names
 
     def test_provider_gauges_registered(self):
         from prometheus_metrics import REGISTRY
         names = {m.name for m in REGISTRY.collect()}
-        assert "tps_provider_avg" in names
-        assert "tps_provider_peak" in names
+        # Aggregate per-provider gauges (provider label only, no session_id)
+        assert "tps_provider_avg_aggregate" in names
+        assert "tps_provider_peak_aggregate" in names
 
 
 # ---------------------------------------------------------------------------
@@ -150,11 +153,12 @@ class TestUpdateMetrics:
         state = _FakeState()
         update_metrics("sess1", state)
         output = generate_metrics().decode()
-        assert "tps_last_call" in output
+        # Aggregate gauges reflect latest session's values
+        assert "tps_last_call_aggregate" in output
         assert "42.5" in output
-        assert "tps_avg" in output
+        assert "tps_avg_aggregate" in output
         assert "40.0" in output
-        assert "tps_peak" in output
+        assert "tps_peak_aggregate" in output
         assert "45.0" in output
 
     def test_counter_increments(self):
@@ -162,8 +166,8 @@ class TestUpdateMetrics:
         state = _FakeState()
         update_metrics("sess2", state)
         output = generate_metrics().decode()
-        assert "tps_api_calls_total" in output
-        assert "tps_tokens_total" in output
+        assert "tps_api_calls_total_aggregate" in output
+        assert "tps_tokens_total_aggregate" in output
         assert 'direction="output"' in output
         assert 'direction="input"' in output
 
@@ -173,8 +177,8 @@ class TestUpdateMetrics:
         update_metrics("sess3", state)
         update_metrics("sess3", state)
         output = generate_metrics().decode()
-        # After 2 calls, api_calls_total should be 2
-        assert "2.0" in output
+        # After 2 calls, aggregate api_calls_total should be 2
+        assert "tps_api_calls_total_aggregate_total 2.0" in output
 
     def test_per_model_metrics(self):
         from prometheus_metrics import update_metrics, generate_metrics
@@ -306,9 +310,9 @@ class TestThreadSafety:
 
         assert errors == []
         output = generate_metrics().decode()
-        # All 4 session IDs should appear
-        for i in range(4):
-            assert f'ts_{i}' in output or f"ts_{i}" in output
+        # Aggregate metrics should reflect the latest update (no per-session labels)
+        assert "tps_last_call_aggregate" in output
+        assert "42.5" in output
 
 
 # ---------------------------------------------------------------------------
@@ -392,16 +396,16 @@ class TestHookIntegration:
         )
 
         output = generate_metrics().decode()
-        # Session gauges should be set
-        assert "tps_last_call" in output
-        assert "tps_avg" in output
-        assert "tps_peak" in output
-        # Per-model metrics should appear
+        # Aggregate gauges should be set (no session_id label by default)
+        assert "tps_last_call_aggregate" in output
+        assert "tps_avg_aggregate" in output
+        assert "tps_peak_aggregate" in output
+        # Aggregate per-model metrics should appear
         assert 'model="openai/gpt-4o"' in output
-        # Per-provider metrics should appear
+        # Aggregate per-provider metrics should appear
         assert 'provider="openai"' in output
-        # Token counters should have values > 0
-        assert "tps_tokens_total" in output
+        # Aggregate token counters should have values > 0
+        assert "tps_tokens_total_aggregate" in output
 
     def test_hook_no_metrics_when_disabled(self):
         """When _prometheus_enabled is False, hook should not update metrics."""
@@ -567,5 +571,176 @@ class TestHealthMetricDegradation:
             pm.increment_ws_broadcast_failure()
             pm.increment_ws_dead_client()
             pm.set_ws_active_connections(0)
+        finally:
+            pm._PROMETHEUS_AVAILABLE = old
+
+
+# ---------------------------------------------------------------------------
+# TestCardinalityGuardrails — bounded series, aggregate-first behavior
+# ---------------------------------------------------------------------------
+
+class TestCardinalityGuardrails:
+    """Regression tests for bounded Prometheus cardinality."""
+
+    def test_bounded_series_count_with_many_sessions(self):
+        """Calling update_metrics() with 100 distinct session_ids produces a
+        FIXED number of metric lines (not 100× per-session)."""
+        from prometheus_metrics import update_metrics, generate_metrics, reset_metrics
+        reset_metrics()
+
+        state = _FakeState()
+        for i in range(100):
+            update_metrics(f"sess_{i}", state)
+
+        output = generate_metrics().decode()
+        lines = [l for l in output.split("\n") if l and not l.startswith("#")]
+        # With aggregate-only (default), series count is constant regardless of
+        # session count. We have ~12 aggregate metrics + health metrics.
+        # Definitely should NOT be 100× anything.
+        assert len(lines) < 50, f"Too many metric lines ({len(lines)}), expected bounded count"
+
+    def test_no_session_id_in_default_output(self):
+        """Default mode should not emit session_id labels."""
+        from prometheus_metrics import update_metrics, generate_metrics, reset_metrics
+        reset_metrics()
+
+        state = _FakeState()
+        update_metrics("should_not_appear", state)
+
+        output = generate_metrics().decode()
+        assert "should_not_appear" not in output
+        assert 'session_id=' not in output
+
+    def test_aggregate_gauges_reflect_latest_session(self):
+        """Aggregate gauges should always reflect the most recent update."""
+        from prometheus_metrics import update_metrics, generate_metrics, reset_metrics
+        reset_metrics()
+
+        state1 = _FakeState()
+        state1.last_call_tps = 10.0
+        state1.avg_tps = 8.0
+        state1.peak_tps = 12.0
+        update_metrics("first", state1)
+
+        state2 = _FakeState()
+        state2.last_call_tps = 99.0
+        state2.avg_tps = 88.0
+        state2.peak_tps = 110.0
+        update_metrics("second", state2)
+
+        output = generate_metrics().decode()
+        # Latest values should be reflected
+        assert "99.0" in output
+        assert "88.0" in output
+        assert "110.0" in output
+
+    def test_legacy_session_labels_mode(self):
+        """With legacy_session_labels=True, session-labeled metrics reappear."""
+        import prometheus_metrics as pm
+        from prometheus_metrics import (
+            configure, reset_metrics, update_metrics, generate_metrics,
+        )
+        configure(legacy_session_labels=True)
+        reset_metrics()
+
+        try:
+            state = _FakeState()
+            update_metrics("legacy_sess", state)
+
+            names = {m.name for m in pm.REGISTRY.collect()}
+            # Session-labeled metrics should be registered
+            assert "tps_last_call" in names
+            assert "tps_avg" in names
+            assert "tps_peak" in names
+
+            output = generate_metrics().decode()
+            assert "legacy_sess" in output
+            assert 'session_id="legacy_sess"' in output
+        finally:
+            configure(legacy_session_labels=False)
+            reset_metrics()
+
+    def test_model_overflow_at_cap(self):
+        """Exceeding model cardinality cap routes to overflow aggregate."""
+        from prometheus_metrics import (
+            configure, reset_metrics, update_metrics, generate_metrics,
+        )
+        configure(label_cardinality_cap=3)
+        reset_metrics()
+
+        try:
+            state = _FakeState()
+            # Add 3 models (at cap)
+            models_3 = {
+                f"model_{i}": _FakeModelState(avg=float(i * 10), peak=float(i * 10 + 5))
+                for i in range(3)
+            }
+            update_metrics("s1", state, models=models_3)
+
+            output = generate_metrics().decode()
+            # All 3 should appear as labeled metrics
+            for i in range(3):
+                assert f'model="model_{i}"' in output
+
+            # 4th model should overflow
+            models_4 = {"model_overflow": _FakeModelState(avg=999.0, peak=999.5)}
+            update_metrics("s2", state, models=models_4)
+
+            output = generate_metrics().decode()
+            assert 'model="model_overflow"' not in output
+            assert "999.0" in output  # overflow gauge value
+            assert "tps_model_avg_overflow" in output
+        finally:
+            configure(label_cardinality_cap=50)
+            reset_metrics()
+
+    def test_provider_overflow_at_cap(self):
+        """Exceeding provider cardinality cap routes to overflow aggregate."""
+        from prometheus_metrics import (
+            configure, reset_metrics, update_metrics, generate_metrics,
+        )
+        configure(label_cardinality_cap=2)
+        reset_metrics()
+
+        try:
+            state = _FakeState()
+            # Add 2 providers (at cap)
+            providers_2 = {
+                f"prov_{i}": _FakeProviderState(avg=float(i * 10), peak=float(i * 10 + 5))
+                for i in range(2)
+            }
+            update_metrics("s1", state, providers=providers_2)
+
+            # 3rd provider should overflow
+            providers_extra = {"prov_overflow": _FakeProviderState(avg=777.0, peak=777.5)}
+            update_metrics("s2", state, providers=providers_extra)
+
+            output = generate_metrics().decode()
+            assert 'provider="prov_overflow"' not in output
+            assert "777.0" in output  # overflow gauge value
+            assert "tps_provider_avg_overflow" in output
+        finally:
+            configure(label_cardinality_cap=50)
+            reset_metrics()
+
+    def test_overflow_gauges_registered(self):
+        """Overflow gauges should be registered in the registry."""
+        from prometheus_metrics import REGISTRY
+        names = {m.name for m in REGISTRY.collect()}
+        assert "tps_model_avg_overflow" in names
+        assert "tps_model_peak_overflow" in names
+        assert "tps_provider_avg_overflow" in names
+        assert "tps_provider_peak_overflow" in names
+
+    def test_no_prometheus_still_works_with_guardrails(self):
+        """Graceful degradation with guardrails code present."""
+        import prometheus_metrics as pm
+        old = pm._PROMETHEUS_AVAILABLE
+        pm._PROMETHEUS_AVAILABLE = False
+        try:
+            assert pm.metrics_available() is False
+            assert pm.generate_metrics() == b""
+            state = _FakeState()
+            pm.update_metrics("degraded", state)  # should not raise
         finally:
             pm._PROMETHEUS_AVAILABLE = old

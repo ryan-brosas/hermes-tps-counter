@@ -39,6 +39,8 @@ _ENV_FIELD_MAP: Dict[str, str] = {
     "API_PORT": "api_port",
     "PROMETHEUS_ENABLED": "prometheus_enabled",
     "API_ENABLED": "api_enabled",
+    "PROMETHEUS_LEGACY_SESSION_LABELS": "prometheus_legacy_session_labels",
+    "PROMETHEUS_LABEL_CARDINALITY_CAP": "prometheus_label_cardinality_cap",
 }
 
 
@@ -69,6 +71,12 @@ class TPSConfig:
 
     api_enabled: bool = False
     """Whether the REST API server is enabled."""
+
+    prometheus_legacy_session_labels: bool = False
+    """Whether to emit per-session_id Prometheus labels (unbounded cardinality)."""
+
+    prometheus_label_cardinality_cap: int = 50
+    """Maximum distinct model/provider label values before routing to _overflow aggregate."""
 
 
 def _coerce_value(field_name: str, raw: str, expected_type: type) -> Any:
@@ -141,6 +149,10 @@ def _load_from_toml(path: Optional[Path] = None) -> Dict[str, Any]:
     if isinstance(prom_section, dict):
         if "enabled" in prom_section:
             result.setdefault("prometheus_enabled", prom_section["enabled"])
+        if "legacy_session_labels" in prom_section:
+            result.setdefault("prometheus_legacy_session_labels", prom_section["legacy_session_labels"])
+        if "label_cardinality_cap" in prom_section:
+            result.setdefault("prometheus_label_cardinality_cap", prom_section["label_cardinality_cap"])
 
     return result
 
@@ -221,6 +233,10 @@ def _load_from_ctx(ctx: Any) -> Dict[str, Any]:
     if isinstance(prom_section, dict):
         if "enabled" in prom_section:
             result["prometheus_enabled"] = prom_section["enabled"]
+        if "legacy_session_labels" in prom_section:
+            result["prometheus_legacy_session_labels"] = prom_section["legacy_session_labels"]
+        if "label_cardinality_cap" in prom_section:
+            result["prometheus_label_cardinality_cap"] = prom_section["label_cardinality_cap"]
 
     return result
 

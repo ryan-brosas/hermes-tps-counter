@@ -302,12 +302,70 @@ pip install prometheus_client
 
 ### Metrics
 
+#### Aggregate Metrics (Default)
+
+These metrics have **no `session_id` label** — series count is fixed regardless of how many sessions exist. This is the default and recommended mode.
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `tps_last_call_aggregate` | Gauge | — | Most recent TPS across all sessions |
+| `tps_avg_aggregate` | Gauge | — | Average TPS from the most recently updated session |
+| `tps_peak_aggregate` | Gauge | — | Peak TPS from the most recently updated session |
+| `tps_tokens_total_aggregate` | Counter | `direction` | Total tokens processed across all sessions |
+| `tps_api_calls_total_aggregate` | Counter | — | Total API calls recorded across all sessions |
+| `tps_model_avg_aggregate` | Gauge | `model` | Average TPS per model (bounded) |
+| `tps_model_peak_aggregate` | Gauge | `model` | Peak TPS per model (bounded) |
+| `tps_provider_avg_aggregate` | Gauge | `provider` | Average TPS per provider (bounded) |
+| `tps_provider_peak_aggregate` | Gauge | `provider` | Peak TPS per provider (bounded) |
+| `tps_model_avg_overflow` | Gauge | — | Overflow avg TPS when model cap exceeded |
+| `tps_model_peak_overflow` | Gauge | — | Overflow peak TPS when model cap exceeded |
+| `tps_provider_avg_overflow` | Gauge | — | Overflow avg TPS when provider cap exceeded |
+| `tps_provider_peak_overflow` | Gauge | — | Overflow peak TPS when provider cap exceeded |
+
+#### Prometheus Cardinality
+
+**Why no `session_id` label by default?**
+
+Every unique combination of metric name + label values creates a separate time series in Prometheus. A `session_id` label means each new session creates new series — unbounded growth that consumes memory in both Prometheus and the plugin. This is a well-known anti-pattern in the Prometheus ecosystem.
+
+Instead, the plugin exports **aggregate metrics** that always reflect the latest state. Per-session detail remains available via the REST API, WebSocket, and SQLite persistence.
+
+**Bounded model/provider labels:**
+
+Per-model and per-provider metrics are capped at 50 distinct values by default. When the cap is exceeded, new values route to overflow aggregate gauges (`tps_model_avg_overflow`, etc.) instead of creating new label sets. Adjust the cap:
+
+```bash
+export TPS_COUNTER_PROMETHEUS_LABEL_CARDINALITY_CAP=100
+```
+
+**Legacy session labels (opt-in):**
+
+If you need per-session Prometheus labels for backward compatibility, enable them explicitly:
+
+```bash
+export TPS_COUNTER_PROMETHEUS_LEGACY_SESSION_LABELS=1
+```
+
+Or in TOML:
+
+```toml
+[prometheus]
+enabled = true
+legacy_session_labels = true
+```
+
+> **Warning:** Enabling legacy session labels restores unbounded cardinality. Use only if you have a retention policy or cardinality-aware Prometheus setup.
+
+#### Legacy Session-Labeled Metrics
+
+When `prometheus_legacy_session_labels` is enabled, these additional metrics are emitted:
+
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `tps_last_call` | Gauge | `session_id` | TPS for the most recent API call |
 | `tps_avg` | Gauge | `session_id` | Rolling average TPS for the session |
 | `tps_peak` | Gauge | `session_id` | Peak TPS observed in this session |
-| `tps_tokens_total` | Counter | `session_id`, `direction` | Total tokens processed (`direction`: `input` or `output`) |
+| `tps_tokens_total` | Counter | `session_id`, `direction` | Total tokens processed |
 | `tps_api_calls_total` | Counter | `session_id` | Total API calls recorded |
 | `tps_model_avg` | Gauge | `session_id`, `model` | Average TPS for a specific model |
 | `tps_model_peak` | Gauge | `session_id`, `model` | Peak TPS for a specific model |
@@ -358,6 +416,8 @@ port = 9127
 # Prometheus
 [prometheus]
 enabled = true
+legacy_session_labels = false
+label_cardinality_cap = 50
 ```
 
 ### Environment Variables
@@ -372,6 +432,8 @@ All env vars use the `TPS_COUNTER_` prefix:
 | `TPS_COUNTER_API_HOST` | string | `127.0.0.1` | REST API bind address |
 | `TPS_COUNTER_API_PORT` | int | `9127` | REST API port |
 | `TPS_COUNTER_PROMETHEUS_ENABLED` | bool | `false` | Enable Prometheus `/metrics` endpoint |
+| `TPS_COUNTER_PROMETHEUS_LEGACY_SESSION_LABELS` | bool | `false` | Emit per-session_id Prometheus labels (unbounded cardinality) |
+| `TPS_COUNTER_PROMETHEUS_LABEL_CARDINALITY_CAP` | int | `50` | Max distinct model/provider label values before overflow |
 | `TPS_COUNTER_API_ENABLED` | bool | `false` | Enable REST API server |
 
 Boolean env vars accept `1`, `true`, `yes`, or `on` (case-insensitive) as truthy values.
