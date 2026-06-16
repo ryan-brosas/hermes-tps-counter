@@ -1,0 +1,3 @@
+COMPLETED
+
+Implemented per-IP rate limiting middleware, configuration fields/loaders/validation, Prometheus metric helper, and focused tests. Targeted config/rate-limiting/API/Prometheus test suites passed locally.

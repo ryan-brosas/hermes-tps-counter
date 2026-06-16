@@ -180,12 +180,27 @@ enabled = true
 
 The API runs on `127.0.0.1:9127` by default. FastAPI auto-generates interactive docs at `/docs` when the server is running.
 
+### Dashboard
+
+When the API is enabled, open `http://127.0.0.1:9127/` (or your configured host/port) in a browser for a live TPS monitoring dashboard. The dashboard:
+
+- Shows real-time TPS updates via WebSocket (`/ws/tps`)
+- Displays aggregate stats (average TPS, total calls, total tokens, active sessions)
+- Lists per-session TPS stats in a table
+- Shows model and provider breakdowns
+- Renders a sparkline of recent TPS values
+- Falls back to REST polling (every 5 seconds) if WebSocket is unavailable
+- Auto-reconnects WebSocket with exponential backoff on disconnect
+- Works offline after page load — zero external dependencies (no CDNs, no remote fonts)
+
 ### Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/v1/health` | Health check — verify API and DB are reachable |
+| `GET` | `/api/v1/health/diagnostics` | Comprehensive component-level health diagnostics |
 | `GET` | `/api/v1/sessions` | List all sessions with TPS stats |
+| `POST` | `/api/v1/sessions/batch/tps` | TPS stats for multiple requested sessions |
 | `GET` | `/api/v1/sessions/{session_id}/tps` | TPS stats for a single session |
 | `GET` | `/api/v1/summary` | Aggregated TPS summary across all sessions |
 | `GET` | `/api/v1/events/{session_id}` | Per-call events for a session |
@@ -200,6 +215,56 @@ The API runs on `127.0.0.1:9127` by default. FastAPI auto-generates interactive 
   "db": "connected"
 }
 ```
+
+### `GET /api/v1/health/diagnostics`
+
+Comprehensive component-level health diagnostics. Returns status for all plugin subsystems in a single request. Use this when debugging plugin issues — it replaces the need to check multiple endpoints separately.
+
+```json
+{
+  "status": "ok",
+  "components": {
+    "memory": {
+      "status": "ok",
+      "sessions": 3,
+      "max_sessions": 50,
+      "models": 5,
+      "providers": 2
+    },
+    "sqlite": {
+      "status": "ok",
+      "connected": true,
+      "session_count": 3,
+      "event_count": 127,
+      "retention_days": 7
+    },
+    "prometheus": {
+      "status": "ok",
+      "enabled": true,
+      "available": true,
+      "registered_collectors": 15
+    },
+    "websocket": {
+      "status": "ok",
+      "enabled": true,
+      "active_connections": 2
+    },
+    "health_counters": {
+      "status": "ok",
+      "usage_extraction_failures": 0,
+      "db_write_errors": 0,
+      "db_read_errors": 0,
+      "ws_broadcast_failures": 0,
+      "ws_dead_clients": 0
+    }
+  },
+  "timestamp": "2026-06-16T10:30:00+00:00"
+}
+```
+
+**Status values:** `ok` — component healthy; `degraded` — component partially functional; `unavailable` — component not reachable.
+
+**Backward compatibility:** The existing `GET /api/v1/health` endpoint is unchanged.
 
 ### `GET /api/v1/sessions`
 
@@ -220,6 +285,71 @@ Returns an array of all tracked sessions:
       "updated_at": "2026-06-16T10:30:00Z"
     }
   ]
+}
+```
+
+### `POST /api/v1/sessions/batch/tps`
+
+Returns TPS stats for a requested subset of sessions in one call. Duplicate IDs are normalized (first-seen order is preserved), and missing sessions are reported in `missing_session_ids` instead of failing the whole request. Empty `session_ids` or non-list input returns FastAPI/Pydantic validation error `422`.
+
+Request:
+
+```json
+{
+  "session_ids": ["abc123", "def456"]
+}
+```
+
+Full-hit response:
+
+```json
+{
+  "sessions": [
+    {
+      "session_id": "abc123",
+      "call_count": 15,
+      "total_output_tokens": 12345,
+      "total_input_tokens": 45000,
+      "total_duration": 125.3,
+      "peak_tps": 456.2,
+      "last_call_tps": 114.0,
+      "avg_tps": 98.7,
+      "updated_at": "2026-06-16T10:30:00Z"
+    },
+    {
+      "session_id": "def456",
+      "call_count": 8,
+      "total_output_tokens": 6789,
+      "total_input_tokens": 22000,
+      "total_duration": 80.0,
+      "peak_tps": 220.4,
+      "last_call_tps": 85.0,
+      "avg_tps": 84.9,
+      "updated_at": "2026-06-16T10:31:00Z"
+    }
+  ],
+  "missing_session_ids": []
+}
+```
+
+Partial-miss response:
+
+```json
+{
+  "sessions": [
+    {
+      "session_id": "abc123",
+      "call_count": 15,
+      "total_output_tokens": 12345,
+      "total_input_tokens": 45000,
+      "total_duration": 125.3,
+      "peak_tps": 456.2,
+      "last_call_tps": 114.0,
+      "avg_tps": 98.7,
+      "updated_at": "2026-06-16T10:30:00Z"
+    }
+  ],
+  "missing_session_ids": ["missing-session"]
 }
 ```
 
@@ -369,6 +499,17 @@ pip install prometheus_client
 | `tps_model_peak` | Gauge | `session_id`, `model` | Peak TPS for a specific model |
 | `tps_provider_avg` | Gauge | `session_id`, `provider` | Average TPS for a specific provider |
 | `tps_provider_peak` | Gauge | `session_id`, `provider` | Peak TPS for a specific provider |
+| `tps_distribution` | Histogram | `model` | Per-call TPS distribution with buckets `1`, `5`, `10`, `25`, `50`, `100`, `250`, `500`, `1000` tok/s for percentile queries |
+| `api_call_latency_seconds` | Histogram | `model` | API latency distribution with buckets `0.1`, `0.25`, `0.5`, `1`, `2.5`, `5`, `10`, `30`, `60` seconds for percentile queries |
+
+Histogram percentiles can be queried in Prometheus/Grafana with `histogram_quantile()`, for example:
+
+```promql
+histogram_quantile(0.95, sum by (le, model) (rate(tps_distribution_bucket[5m])))
+histogram_quantile(0.99, sum by (le, model) (rate(api_call_latency_seconds_bucket[5m])))
+```
+
+The histogram `model` label is capped to protect Prometheus from unbounded cardinality; observations for model labels beyond the cap are discarded silently.
 
 ### Prometheus Scrape Config
 

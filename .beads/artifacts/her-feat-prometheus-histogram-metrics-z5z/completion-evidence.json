@@ -1,0 +1,58 @@
+{
+  "bead_id": "her-feat-prometheus-histogram-metrics-z5z",
+  "status": "pass",
+  "verified_at": "2026-06-16T15:32:00Z",
+  "requirements_met": [
+    {
+      "requirement": "tps_distribution histogram registered with model label and required buckets",
+      "status": "pass",
+      "evidence": "tests/test_prometheus.py::TestMetricDefinitions::test_histograms_registered and histogram smoke script validated bucket output"
+    },
+    {
+      "requirement": "api_call_latency_seconds histogram registered with model label and required buckets",
+      "status": "pass",
+      "evidence": "tests/test_prometheus.py::TestMetricDefinitions::test_histograms_registered and histogram smoke script validated bucket output"
+    },
+    {
+      "requirement": "Both histograms use custom REGISTRY",
+      "status": "pass",
+      "evidence": "REGISTRY.get_sample_value() assertions in TestHistogramMetrics passed"
+    },
+    {
+      "requirement": "Record observations from _on_post_api_request",
+      "status": "pass",
+      "evidence": "tests/test_prometheus.py::TestHistogramMetrics::test_hook_records_histogram_observations passed"
+    },
+    {
+      "requirement": "Graceful degradation when prometheus_client is unavailable",
+      "status": "pass",
+      "evidence": "tests/test_prometheus.py::TestGracefulDegradation::test_no_prometheus_module_still_works passed with observe_tps/observe_latency no-ops"
+    },
+    {
+      "requirement": "Helper functions observe_tps(value, model) and observe_latency(seconds, model)",
+      "status": "pass",
+      "evidence": "Helpers imported and exercised by tests and smoke script"
+    },
+    {
+      "requirement": "HELP and TYPE metadata included in metrics output",
+      "status": "pass",
+      "evidence": "tests/test_prometheus.py::TestHistogramMetrics::test_histogram_output_contains_help_type_and_buckets passed"
+    },
+    {
+      "requirement": "Backward compatible with existing tests",
+      "status": "pass",
+      "evidence": "pytest tests/ -x -> 294 passed"
+    },
+    {
+      "requirement": "Tests for histogram registration, observation, and output",
+      "status": "pass",
+      "evidence": "pytest tests/test_prometheus.py -k histogram -v -> 5 passed"
+    }
+  ],
+  "verification_commands": [
+    {"command": "pytest tests/test_prometheus.py -k histogram -v", "result": "5 passed"},
+    {"command": "pytest tests/test_prometheus.py -v", "result": "42 passed"},
+    {"command": "pytest tests/ -x", "result": "294 passed"},
+    {"command": "python histogram smoke script", "result": "All histogram checks passed"}
+  ]
+}
