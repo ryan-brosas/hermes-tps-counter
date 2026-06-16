@@ -1,0 +1,4 @@
+COMPLETED: Implemented opt-in max-session and TTL in-memory retention for _SESSIONS.
+VERIFIED: tests/test_api.py, tests/test_thread_safety.py, full tests/, forbidden marker inspection, br lint.
+NEXT: PR created from feat/her-br5-retention.
+BLOCKERS: None.

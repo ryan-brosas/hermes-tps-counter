@@ -36,6 +36,9 @@ _PRIVACY_DEFAULT_SECRET = "hermes-tps-counter-default-privacy-key"
 _PRIVACY_IDENTIFIER_FIELDS = frozenset({"session_id", "model", "provider"})
 _PRIVACY_VALID_TREATMENTS = frozenset({"raw", "pseudonymized", "redacted", "omitted"})
 
+_RETENTION_MAX_SESSIONS_ENV = "HERMES_TPS_MAX_SESSIONS"
+_RETENTION_SESSION_TTL_SECONDS_ENV = "HERMES_TPS_SESSION_TTL_SECONDS"
+
 
 class _PrivacyPolicy:
     """Dependency-free redaction policy for outbound observability identifiers."""
@@ -193,6 +196,100 @@ def get_privacy_diagnostics() -> Dict[str, Any]:
     return _get_privacy_policy().diagnostics()
 
 
+class _RetentionPolicy:
+    """Opt-in retention policy for bounded in-memory session state."""
+
+    __slots__ = ("max_sessions", "session_ttl_seconds", "max_sessions_status", "session_ttl_status")
+
+    def __init__(
+        self,
+        *,
+        max_sessions: int | None,
+        session_ttl_seconds: float | None,
+        max_sessions_status: str,
+        session_ttl_status: str,
+    ) -> None:
+        self.max_sessions = max_sessions
+        self.session_ttl_seconds = session_ttl_seconds
+        self.max_sessions_status = max_sessions_status
+        self.session_ttl_status = session_ttl_status
+
+    @property
+    def enabled(self) -> bool:
+        return self.max_sessions is not None or self.session_ttl_seconds is not None
+
+    def diagnostics(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "mode": "opportunistic_in_memory" if self.enabled else "disabled",
+            "configuration": {
+                "max_sessions_env": _RETENTION_MAX_SESSIONS_ENV,
+                "session_ttl_seconds_env": _RETENTION_SESSION_TTL_SECONDS_ENV,
+            },
+            "max_sessions": {
+                "enabled": self.max_sessions is not None,
+                "value": self.max_sessions,
+                "status": self.max_sessions_status,
+            },
+            "session_ttl_seconds": {
+                "enabled": self.session_ttl_seconds is not None,
+                "value": self.session_ttl_seconds,
+                "status": self.session_ttl_status,
+            },
+            "scope": "process-local _SESSIONS only",
+            "pruning": "opportunistic after successful API request records; no background threads, timers, or external dependencies",
+            "identifier_material_exposed": False,
+        }
+
+
+def _parse_positive_int_env(name: str) -> tuple[int | None, str]:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None, "unset"
+    value = raw.strip()
+    if not value:
+        return None, "blank_disabled"
+    try:
+        parsed = int(value, 10)
+    except ValueError:
+        return None, "invalid_disabled"
+    if parsed <= 0:
+        return None, "non_positive_disabled"
+    return parsed, "enabled"
+
+
+def _parse_positive_float_env(name: str) -> tuple[float | None, str]:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None, "unset"
+    value = raw.strip()
+    if not value:
+        return None, "blank_disabled"
+    try:
+        parsed = float(value)
+    except ValueError:
+        return None, "invalid_disabled"
+    if parsed <= 0:
+        return None, "non_positive_disabled"
+    return parsed, "enabled"
+
+
+def _get_retention_policy() -> _RetentionPolicy:
+    max_sessions, max_sessions_status = _parse_positive_int_env(_RETENTION_MAX_SESSIONS_ENV)
+    session_ttl_seconds, session_ttl_status = _parse_positive_float_env(_RETENTION_SESSION_TTL_SECONDS_ENV)
+    return _RetentionPolicy(
+        max_sessions=max_sessions,
+        session_ttl_seconds=session_ttl_seconds,
+        max_sessions_status=max_sessions_status,
+        session_ttl_status=session_ttl_status,
+    )
+
+
+def get_retention_diagnostics() -> Dict[str, Any]:
+    """Return identifier-safe diagnostics for in-memory session retention policy."""
+    return _get_retention_policy().diagnostics()
+
+
 class _SessionTPS:
     """Tracks TPS metrics for a single session."""
 
@@ -206,6 +303,7 @@ class _SessionTPS:
         "peak_tps",
         "turn_start_tokens",
         "turn_start_time",
+        "last_updated_monotonic",
     )
 
     def __init__(self) -> None:
@@ -218,6 +316,7 @@ class _SessionTPS:
         self.peak_tps: float = 0.0
         self.turn_start_tokens: int = 0
         self.turn_start_time: float = time.time()
+        self.last_updated_monotonic: float = time.monotonic()
 
     def record(self, output_tokens: int, duration: float) -> None:
         self.call_count += 1
@@ -229,6 +328,7 @@ class _SessionTPS:
             self.last_call_tps = output_tokens / duration
             if self.last_call_tps > self.peak_tps:
                 self.peak_tps = self.last_call_tps
+        self.last_updated_monotonic = time.monotonic()
 
     @property
     def avg_tps(self) -> float:
@@ -278,6 +378,46 @@ def _get_session(session_id: str) -> _SessionTPS:
         return _SESSIONS[session_id]
 
 
+def _prune_sessions_locked(
+    *,
+    current_session_id: str | None = None,
+    policy: _RetentionPolicy | None = None,
+    now_monotonic: float | None = None,
+) -> None:
+    """Prune _SESSIONS according to policy. Caller must hold _STATE_LOCK."""
+    active_policy = policy or _get_retention_policy()
+    if not active_policy.enabled or not _SESSIONS:
+        return
+
+    now = time.monotonic() if now_monotonic is None else now_monotonic
+    if active_policy.session_ttl_seconds is not None:
+        stale_ids = [
+            session_id
+            for session_id, state in _SESSIONS.items()
+            if now - state.last_updated_monotonic > active_policy.session_ttl_seconds
+        ]
+        for session_id in stale_ids:
+            if session_id != current_session_id:
+                _SESSIONS.pop(session_id, None)
+
+    if active_policy.max_sessions is None or len(_SESSIONS) <= active_policy.max_sessions:
+        return
+
+    to_remove = len(_SESSIONS) - active_policy.max_sessions
+    candidates = [
+        (session_id, state.last_updated_monotonic)
+        for session_id, state in _SESSIONS.items()
+        if session_id != current_session_id
+    ]
+    if len(candidates) < to_remove:
+        candidates = [
+            (session_id, state.last_updated_monotonic)
+            for session_id, state in _SESSIONS.items()
+        ]
+    for session_id, _last_updated in sorted(candidates, key=lambda item: item[1])[:to_remove]:
+        _SESSIONS.pop(session_id, None)
+
+
 def _on_post_api_request(**kwargs: Any) -> None:
     """Hook callback: record TPS after each LLM API call."""
     session_id = kwargs.get("session_id", "")
@@ -291,8 +431,12 @@ def _on_post_api_request(**kwargs: Any) -> None:
     if output_tokens <= 0 or duration <= 0:
         return
 
-    state = _get_session(session_id)
-    state.record(output_tokens, duration)
+    with _STATE_LOCK:
+        if session_id not in _SESSIONS:
+            _SESSIONS[session_id] = _SessionTPS()
+        state = _SESSIONS[session_id]
+        state.record(output_tokens, duration)
+        _prune_sessions_locked(current_session_id=session_id)
     privacy_policy = _get_privacy_policy()
     # Expose TPS snapshot for status bar integration
     try:
@@ -348,6 +492,7 @@ def get_observability_contract() -> Dict[str, Any]:
     branch as unavailable.
     """
     privacy = get_privacy_diagnostics()
+    retention = get_retention_diagnostics()
     return {
         "contract": {
             "name": "hermes-tps-counter-observability",
@@ -399,6 +544,7 @@ def get_observability_contract() -> Dict[str, Any]:
             },
             "trusted_state": "Raw identifiers remain internal for session lookup and TPS correctness; redaction is applied at outbound boundaries.",
         },
+        "retention": retention,
         "status_snapshot": {
             "available": True,
             "surface": "agent._tps_snapshot",
