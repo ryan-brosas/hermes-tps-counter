@@ -517,6 +517,37 @@ def _stop_api_server() -> None:
         _API_SERVER = None
 
 
+def unregister(ctx: Any) -> None:
+    """Hermes shutdown hook — release all plugin resources cleanly."""
+    global _STORE, _prometheus_enabled, _WS_MANAGER, _EVENT_LOOP
+
+    # Stop the API server if running
+    try:
+        _stop_api_server()
+    except Exception:
+        pass
+
+    # Close the persistent store
+    if _STORE is not None:
+        try:
+            _STORE.close()
+            logger.info("tps-counter: persistent store closed")
+        except Exception:
+            pass
+        _STORE = None
+
+    # Clear all in-memory state
+    with _STATE_LOCK:
+        _SESSIONS.clear()
+        _MODELS.clear()
+        _PROVIDERS.clear()
+
+    # Reset flags and async state
+    _prometheus_enabled = False
+    _WS_MANAGER = None
+    _EVENT_LOOP = None
+
+
 def _on_session_end(**kwargs: Any) -> None:
     """Hook callback: clean up session state when a session ends."""
     session_id = kwargs.get("session_id", "")
@@ -547,6 +578,7 @@ def register(ctx: Any) -> None:
 
     ctx.register_hook("post_api_request", _on_post_api_request)
     ctx.register_hook("on_session_end", _on_session_end)
+    ctx.register_hook("on_shutdown", unregister)
     logger.info("tps-counter plugin registered")
 
     # Optionally start the REST API server

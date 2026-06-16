@@ -685,3 +685,99 @@ class TestEdgeCases:
             )
         with _STATE_LOCK:
             assert len(_SESSIONS) == 0
+
+
+# ---------------------------------------------------------------------------
+# 6. unregister(): shutdown hook cleanup
+# ---------------------------------------------------------------------------
+
+class TestUnregister:
+    """Test unregister(ctx) shutdown hook behavior."""
+
+    def test_unregister_closes_store(self):
+        """unregister() calls _STORE.close() when store is initialized."""
+        import __init__ as plugin
+        from __init__ import unregister
+
+        mock_store = MagicMock()
+        plugin._STORE = mock_store
+        ctx = MagicMock()
+        unregister(ctx)
+        mock_store.close.assert_called_once()
+        assert plugin._STORE is None
+
+    def test_unregister_stops_api_server(self):
+        """unregister() sets _API_SERVER.should_exit = True when server is running."""
+        import __init__ as plugin
+        from __init__ import unregister
+
+        mock_server = MagicMock()
+        mock_server.should_exit = False
+        plugin._API_SERVER = mock_server
+        ctx = MagicMock()
+        unregister(ctx)
+        assert mock_server.should_exit is True
+        assert plugin._API_SERVER is None
+
+    def test_unregister_clears_state(self):
+        """unregister() clears _SESSIONS, _MODELS, _PROVIDERS."""
+        import __init__ as plugin
+        from __init__ import unregister, _STATE_LOCK, _SessionTPS
+
+        with _STATE_LOCK:
+            plugin._SESSIONS["s1"] = _SessionTPS()
+            plugin._MODELS["s1"] = {"m": MagicMock()}
+            plugin._PROVIDERS["s1"] = {"p": MagicMock()}
+
+        ctx = MagicMock()
+        unregister(ctx)
+
+        with _STATE_LOCK:
+            assert len(plugin._SESSIONS) == 0
+            assert len(plugin._MODELS) == 0
+            assert len(plugin._PROVIDERS) == 0
+
+    def test_unregister_noop_when_no_store(self):
+        """unregister() is a no-op when _STORE is None."""
+        import __init__ as plugin
+        from __init__ import unregister
+
+        assert plugin._STORE is None
+        ctx = MagicMock()
+        unregister(ctx)  # Should not raise
+
+    def test_unregister_noop_when_no_server(self):
+        """unregister() is a no-op when _API_SERVER is None."""
+        import __init__ as plugin
+        from __init__ import unregister
+
+        assert plugin._API_SERVER is None
+        ctx = MagicMock()
+        unregister(ctx)  # Should not raise
+
+    def test_register_wires_shutdown_hook(self):
+        """register() calls ctx.register_hook('on_shutdown', unregister)."""
+        import __init__ as plugin
+        from __init__ import register, unregister
+
+        ctx = MagicMock()
+        # Mock config to avoid real store/API startup
+        with patch("config.get_config") as mock_cfg:
+            mock_cfg.return_value = MagicMock(
+                db_path=":memory:",
+                retention_days=7,
+                api_enabled=False,
+                prometheus_enabled=False,
+            )
+            register(ctx)
+
+        # Verify on_shutdown hook was registered
+        shutdown_calls = [
+            c for c in ctx.register_hook.call_args_list
+            if c[0][0] == "on_shutdown"
+        ]
+        assert len(shutdown_calls) == 1
+        assert shutdown_calls[0][0][1] is unregister
+
+        # Verify total hooks: post_api_request, on_session_end, on_shutdown
+        assert ctx.register_hook.call_count == 3
