@@ -118,6 +118,57 @@ stats = get_tps_stats(session_id)
 # {"calls": 5, "avg_tps": 98.7, "last_tps": 114.0, "peak_tps": 456.2, "total_output_tokens": 12345, "total_duration": 125.3}
 ```
 
+## Observability Contract
+
+The plugin exposes a machine-readable observability contract for dashboards,
+status-bar integrations, and compatibility checks:
+
+```python
+from tps_counter import get_observability_contract
+
+contract = get_observability_contract()
+# contract["contract"]["contract_version"] == "1.0.0"
+```
+
+On this branch the contract is available as an in-process Python helper only.
+There is no REST router, WebSocket stream, or Prometheus exporter module in the
+current plugin files, so the contract marks those optional surfaces with
+`available: false` and explains the reason. If a future branch adds a REST
+adapter, consumers should prefer a documented read-only endpoint such as
+`/api/v1/observability/contract` when the contract marks it available.
+
+The contract includes these stable top-level sections:
+
+- `contract` — contract name/version plus plugin name/version from
+  `plugin.yaml`.
+- `compatibility` — additive-compatibility rules and runtime-overhead notes.
+- `status_snapshot` — metadata for `agent._tps_snapshot` fields including
+  `last_tps`, `avg_tps`, `peak_tps`, `output_tokens`, `updated_at`,
+  `updated_monotonic`, and `session_id`.
+- `api` — metadata for `get_tps_stats(session_id)` response fields and the
+  zero-value behavior for missing sessions.
+- `websocket` — availability and event metadata when a WebSocket surface exists;
+  currently unavailable on this branch.
+- `prometheus` — metric names/types/units/labels when an exporter exists;
+  currently unavailable on this branch.
+
+### Contract Versioning and Consumer Rules
+
+Consumers should validate the required sections for the `contract_version` they
+support, but they must ignore unknown fields or sections. Additive metadata can
+appear without breaking compatible consumers; breaking changes require a new
+major contract version.
+
+Status-bar consumers should continue to apply the stale and session-mismatch
+rules above: calculate age with `updated_monotonic`, suppress or gray-out stale
+TPS values, and ignore snapshots whose `session_id` does not match the active
+session.
+
+Prometheus consumers should keep label cardinality low. Every unique label set
+creates a time series, so avoid unbounded labels such as raw session ids, user
+ids, prompts, or request ids unless a future contract version explicitly marks a
+dimension as bounded or safe.
+
 ## No Configuration Required
 
 Works out of the box. No env vars or config needed.
