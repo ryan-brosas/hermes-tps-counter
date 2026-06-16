@@ -48,6 +48,28 @@ class SummaryResponse(BaseModel):
     average_tps: float
 
 
+class EventResponse(BaseModel):
+    id: int
+    session_id: str
+    model: str
+    provider: str
+    input_tokens: int
+    output_tokens: int
+    duration: float
+    tps: float
+    created_at: str
+
+
+class EventListResponse(BaseModel):
+    events: List[EventResponse]
+
+
+class TrendResponse(BaseModel):
+    session_id: str
+    models: Dict[str, Dict[str, Any]]
+    providers: Dict[str, Dict[str, Any]]
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -136,5 +158,38 @@ def create_app(store: Any) -> FastAPI:
             total_tokens=total_tokens,
             average_tps=round(avg_tps, 2),
         )
+
+    @app.get("/api/v1/events/{session_id}", response_model=EventListResponse)
+    def events(
+        session_id: str,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+        limit: int = 100,
+    ) -> EventListResponse:
+        """Return per-call events for a session with optional time-range filter."""
+        if store is None:
+            raise HTTPException(status_code=503, detail="Database not available")
+        event_list = store.load_events(session_id, since=since, until=until, limit=limit)
+        if not event_list:
+            raise HTTPException(
+                status_code=404, detail=f"No events found for session '{session_id}'"
+            )
+        return EventListResponse(events=[EventResponse(**e) for e in event_list])
+
+    @app.get("/api/v1/trends/{session_id}", response_model=TrendResponse)
+    def trends(
+        session_id: str,
+        since: Optional[str] = None,
+    ) -> TrendResponse:
+        """Return per-model and per-provider aggregated trends for a session."""
+        if store is None:
+            raise HTTPException(status_code=503, detail="Database not available")
+        models = store.aggregate_by_model(session_id, since=since)
+        providers = store.aggregate_by_provider(session_id, since=since)
+        if not models and not providers:
+            raise HTTPException(
+                status_code=404, detail=f"No events found for session '{session_id}'"
+            )
+        return TrendResponse(session_id=session_id, models=models, providers=providers)
 
     return app

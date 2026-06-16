@@ -11,12 +11,12 @@ import os
 import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 # Current schema version — bump when altering tables
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -61,6 +61,64 @@ _DELETE_EXPIRED = "DELETE FROM session_tps WHERE updated_at < ?;"
 
 _COUNT = "SELECT COUNT(*) FROM session_tps;"
 
+_CALL_EVENTS_DDL = """
+CREATE TABLE IF NOT EXISTS call_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id      TEXT    NOT NULL,
+    model           TEXT    NOT NULL DEFAULT '',
+    provider        TEXT    NOT NULL DEFAULT '',
+    input_tokens    INTEGER NOT NULL DEFAULT 0,
+    output_tokens   INTEGER NOT NULL DEFAULT 0,
+    duration        REAL    NOT NULL DEFAULT 0.0,
+    tps             REAL    NOT NULL DEFAULT 0.0,
+    created_at      TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_call_events_session_time
+    ON call_events (session_id, created_at);
+"""
+
+_INSERT_EVENT = """
+INSERT INTO call_events (session_id, model, provider, input_tokens, output_tokens, duration, tps, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+"""
+
+_LOAD_EVENTS = """
+SELECT id, session_id, model, provider, input_tokens, output_tokens, duration, tps, created_at
+FROM call_events WHERE session_id = ?
+"""
+
+_LOAD_EVENTS_SINCE = " AND created_at >= ?"
+_LOAD_EVENTS_UNTIL = " AND created_at <= ?"
+_LOAD_EVENTS_ORDER = " ORDER BY created_at ASC LIMIT ?;"
+
+_AGGREGATE_BY_MODEL = """
+SELECT model,
+       COUNT(*) as calls,
+       SUM(output_tokens) as total_output,
+       SUM(input_tokens) as total_input,
+       SUM(duration) as total_duration,
+       AVG(tps) as avg_tps,
+       MAX(tps) as peak_tps
+FROM call_events WHERE session_id = ?
+"""
+
+_AGGREGATE_BY_PROVIDER = """
+SELECT provider,
+       COUNT(*) as calls,
+       SUM(output_tokens) as total_output,
+       SUM(input_tokens) as total_input,
+       SUM(duration) as total_duration,
+       AVG(tps) as avg_tps,
+       MAX(tps) as peak_tps
+FROM call_events WHERE session_id = ?
+"""
+
+_AGGREGATE_SINCE = " AND created_at >= ?"
+_AGGREGATE_GROUP = " GROUP BY {};"
+
+_DELETE_EXPIRED_EVENTS = "DELETE FROM call_events WHERE created_at < ?;"
+
 
 class PersistentSessionStore:
     """Thread-safe SQLite store for per-session TPS state.
@@ -77,6 +135,7 @@ class PersistentSessionStore:
         self._db_path = db_path
         self._lock = threading.Lock()
         self._conn: Optional[sqlite3.Connection] = None
+        self._event_write_counter: int = 0  # triggers lazy expiry every 100 writes
         self._init_db()
 
     # ------------------------------------------------------------------
@@ -95,6 +154,7 @@ class PersistentSessionStore:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA busy_timeout=5000")
             self._conn.executescript(_DDL)
+            self._conn.executescript(_CALL_EVENTS_DDL)
             self._migrate()
             self._conn.commit()
             logger.debug("tps-counter: DB initialized at %s", self._db_path)
@@ -122,6 +182,17 @@ class PersistentSessionStore:
                 )
             except Exception:
                 pass  # Column already exists
+            self._conn.execute("DELETE FROM schema_version")
+            self._conn.execute(
+                "INSERT INTO schema_version (version) VALUES (?)",
+                (_SCHEMA_VERSION,),
+            )
+        if current < 3:
+            # Create call_events table for per-call event storage
+            try:
+                self._conn.executescript(_CALL_EVENTS_DDL)
+            except Exception:
+                pass  # Table already exists
             self._conn.execute("DELETE FROM schema_version")
             self._conn.execute(
                 "INSERT INTO schema_version (version) VALUES (?)",
@@ -253,6 +324,191 @@ class PersistentSessionStore:
             return row[0] if row else 0
         except Exception as exc:
             logger.warning("tps-counter: DB count failed: %s", exc)
+            return 0
+
+    # ------------------------------------------------------------------
+    # Event storage API
+    # ------------------------------------------------------------------
+
+    def record_event(
+        self,
+        session_id: str,
+        model: str,
+        provider: str,
+        input_tokens: int,
+        output_tokens: int,
+        duration: float,
+        tps: float,
+    ) -> None:
+        """Insert a per-call event into call_events. Thread-safe."""
+        if self._conn is None:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            with self._lock:
+                self._conn.execute(
+                    _INSERT_EVENT,
+                    (session_id, model, provider, input_tokens, output_tokens, duration, tps, now),
+                )
+                self._conn.commit()
+                self._event_write_counter += 1
+                if self._event_write_counter >= 100:
+                    self._event_write_counter = 0
+                    self._delete_expired_events_unlocked(7 * 86400)  # default 7 days
+        except Exception as exc:
+            logger.warning("tps-counter: event record failed for %s: %s", session_id, exc)
+
+    def load_events(
+        self,
+        session_id: str,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Load call events for a session, optionally filtered by time range."""
+        if self._conn is None:
+            return []
+        sql = _LOAD_EVENTS
+        params: list = [session_id]
+        if since:
+            sql += _LOAD_EVENTS_SINCE
+            params.append(since)
+        if until:
+            sql += _LOAD_EVENTS_UNTIL
+            params.append(until)
+        sql += _LOAD_EVENTS_ORDER
+        params.append(limit)
+        try:
+            with self._lock:
+                cur = self._conn.execute(sql, params)
+                rows = cur.fetchall()
+            return [self._event_row_to_dict(row) for row in rows]
+        except Exception as exc:
+            logger.warning("tps-counter: load_events failed for %s: %s", session_id, exc)
+            return []
+
+    def aggregate_by_model(
+        self, session_id: str, since: Optional[str] = None
+    ) -> Dict[str, Dict[str, Any]]:
+        """Aggregate call events grouped by model for a session."""
+        if self._conn is None:
+            return {}
+        sql = _AGGREGATE_BY_MODEL
+        params: list = [session_id]
+        if since:
+            sql += _AGGREGATE_SINCE
+            params.append(since)
+        sql += _AGGREGATE_GROUP.format("model")
+        try:
+            with self._lock:
+                cur = self._conn.execute(sql, params)
+                rows = cur.fetchall()
+            return {
+                row[0]: {
+                    "calls": row[1],
+                    "total_output": row[2],
+                    "total_input": row[3],
+                    "total_duration": round(row[4], 3),
+                    "avg_tps": round(row[5], 2),
+                    "peak_tps": round(row[6], 2),
+                }
+                for row in rows
+            }
+        except Exception as exc:
+            logger.warning("tps-counter: aggregate_by_model failed for %s: %s", session_id, exc)
+            return {}
+
+    def aggregate_by_provider(
+        self, session_id: str, since: Optional[str] = None
+    ) -> Dict[str, Dict[str, Any]]:
+        """Aggregate call events grouped by provider for a session."""
+        if self._conn is None:
+            return {}
+        sql = _AGGREGATE_BY_PROVIDER
+        params: list = [session_id]
+        if since:
+            sql += _AGGREGATE_SINCE
+            params.append(since)
+        sql += _AGGREGATE_GROUP.format("provider")
+        try:
+            with self._lock:
+                cur = self._conn.execute(sql, params)
+                rows = cur.fetchall()
+            return {
+                row[0]: {
+                    "calls": row[1],
+                    "total_output": row[2],
+                    "total_input": row[3],
+                    "total_duration": round(row[4], 3),
+                    "avg_tps": round(row[5], 2),
+                    "peak_tps": round(row[6], 2),
+                }
+                for row in rows
+            }
+        except Exception as exc:
+            logger.warning("tps-counter: aggregate_by_provider failed for %s: %s", session_id, exc)
+            return {}
+
+    def delete_expired_events(self, retention_seconds: float) -> int:
+        """Delete call_events older than retention_seconds. Returns count deleted.
+        
+        Thread-safe: acquires lock if not already held.
+        """
+        if self._conn is None:
+            return 0
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=retention_seconds)
+        ).isoformat()
+        try:
+            with self._lock:
+                cur = self._conn.execute(_DELETE_EXPIRED_EVENTS, (cutoff,))
+                self._conn.commit()
+                return cur.rowcount
+        except Exception as exc:
+            logger.warning("tps-counter: delete_expired_events failed: %s", exc)
+            return 0
+
+    def _delete_expired_events_unlocked(self, retention_seconds: float) -> int:
+        """Internal: delete old events. Caller must hold self._lock."""
+        if self._conn is None:
+            return 0
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=retention_seconds)
+        ).isoformat()
+        try:
+            cur = self._conn.execute(_DELETE_EXPIRED_EVENTS, (cutoff,))
+            self._conn.commit()
+            return cur.rowcount
+        except Exception as exc:
+            logger.warning("tps-counter: delete_expired_events failed: %s", exc)
+            return 0
+
+    @staticmethod
+    def _event_row_to_dict(row: tuple) -> Dict[str, Any]:
+        """Convert a call_events DB row to a dict."""
+        return {
+            "id": row[0],
+            "session_id": row[1],
+            "model": row[2],
+            "provider": row[3],
+            "input_tokens": row[4],
+            "output_tokens": row[5],
+            "duration": row[6],
+            "tps": row[7],
+            "created_at": row[8],
+        }
+
+    def event_count(self) -> int:
+        """Return total number of rows in call_events."""
+        if self._conn is None:
+            return 0
+        try:
+            with self._lock:
+                cur = self._conn.execute("SELECT COUNT(*) FROM call_events;")
+                row = cur.fetchone()
+            return row[0] if row else 0
+        except Exception as exc:
+            logger.warning("tps-counter: event_count failed: %s", exc)
             return 0
 
     def close(self) -> None:

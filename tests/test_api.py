@@ -282,5 +282,5 @@ class TestRegisterIntegration:
             # Should not raise — just logs a warning
             tps_mod.register(ctx)
 
-        # Plugin hook should still be registered
-        ctx.register_hook.assert_called_once()
+        # Plugin hook should still be registered (post_api_request + on_session_end)
+        assert ctx.register_hook.call_count == 2

@@ -58,7 +58,7 @@ class TestSchemaCreation:
             row = cur.fetchone()
             conn.close()
             assert row is not None
-            assert row[0] == 2
+            assert row[0] == 3
         finally:
             store.close()
 

@@ -336,6 +336,14 @@ def _on_post_api_request(**kwargs: Any) -> None:
         state.record(output_tokens, duration, input_tokens)
         # Write-through to SQLite
         _persist_state(session_id, state)
+        # Record per-call event
+        if _STORE is not None:
+            tps_val = output_tokens / duration if duration > 0 else 0.0
+            provider_val = _extract_provider(model)
+            try:
+                _STORE.record_event(session_id, model, provider_val, input_tokens, output_tokens, duration, tps_val)
+            except Exception as exc:
+                logger.debug("tps-counter: event recording failed: %s", exc)
         # Per-model tracking
         if model:
             model_state = _get_model(session_id, model)
