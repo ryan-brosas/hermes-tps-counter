@@ -395,6 +395,41 @@ def _on_post_api_request(**kwargs: Any) -> None:
     )
 
 
+_API_SERVER: Optional[Any] = None  # uvicorn.Server reference for shutdown
+
+
+def _start_api_server(store: Any, host: str, port: int) -> None:
+    """Start the FastAPI TPS API in a daemon thread."""
+    global _API_SERVER
+    try:
+        import uvicorn
+        from api import create_app
+
+        app = create_app(store)
+        config = uvicorn.Config(
+            app, host=host, port=port, log_level="warning", access_log=False,
+        )
+        server = uvicorn.Server(config)
+        _API_SERVER = server
+        thread = threading.Thread(target=server.run, daemon=True, name="tps-api")
+        thread.start()
+        logger.info("tps-counter: API server started on %s:%d", host, port)
+    except Exception as exc:
+        logger.warning("tps-counter: failed to start API server: %s", exc)
+
+
+def _stop_api_server() -> None:
+    """Signal the API server to shut down."""
+    global _API_SERVER
+    if _API_SERVER is not None:
+        try:
+            _API_SERVER.should_exit = True
+            logger.info("tps-counter: API server shutting down")
+        except Exception:
+            pass
+        _API_SERVER = None
+
+
 def register(ctx: Any) -> None:
     """Plugin entry point — called by Hermes plugin loader."""
     global _STORE
@@ -424,6 +459,13 @@ def register(ctx: Any) -> None:
 
     ctx.register_hook("post_api_request", _on_post_api_request)
     logger.info("tps-counter plugin registered")
+
+    # Optionally start the REST API server
+    api_config = config.get("api", {})
+    if api_config and api_config.get("enabled", False):
+        host = api_config.get("host", "127.0.0.1")
+        port = api_config.get("port", 9127)
+        _start_api_server(_STORE, host, port)
 
 
 # Expose state for /usage integration or external queries
