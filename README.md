@@ -4,8 +4,8 @@ Hermes Agent plugin that tracks tokens-per-second (TPS) throughput and displays 
 
 ## What It Does
 
-- Hooks into `post_api_request` to capture output tokens and API duration after each LLM call
-- Maintains per-session stats: last TPS, rolling average, peak TPS, total output tokens
+- Hooks into `post_api_request` to capture input/output tokens and API duration after each LLM call
+- Maintains per-session stats: last TPS, rolling average, peak TPS, total input/output/total tokens
 - Injects TPS data into the Hermes status bar: `⚕ glm-5.1 │ ⚡114 tok/s │ 20.2K/202.8K │ [█░░░░░░░░░] 10% │ 1m │ ⏲ 28s │ ✓ 4s`
 
 ## Install
@@ -77,9 +77,11 @@ For medium variant (52-75 cols), same but with `" · "` separator.
 ```python
 from tps_counter import get_tps_stats, get_model_stats
 
-# Session-level stats (unchanged)
+# Session-level stats
 stats = get_tps_stats(session_id)
-# {"calls": 5, "avg_tps": 98.7, "last_tps": 114.0, "peak_tps": 456.2, "total_output_tokens": 12345, "total_duration": 125.3}
+# {"calls": 5, "avg_tps": 98.7, "last_tps": 114.0, "peak_tps": 456.2,
+#  "total_output_tokens": 12345, "total_input_tokens": 45000,
+#  "total_tokens": 57345, "total_duration": 125.3}
 
 # Per-model stats (new)
 model_stats = get_model_stats(session_id)
