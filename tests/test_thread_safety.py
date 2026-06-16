@@ -3,11 +3,13 @@ import threading
 
 import pytest
 
-from __init__ import _get_session, _SessionTPS, get_tps_stats, _SESSIONS, _STATE_LOCK
+from __init__ import _get_session, _SessionTPS, get_tps_stats, _on_post_api_request, _SESSIONS, _STATE_LOCK
 
 
 @pytest.fixture(autouse=True)
-def clear_sessions():
+def clear_sessions(monkeypatch):
+    monkeypatch.delenv("HERMES_TPS_MAX_SESSIONS", raising=False)
+    monkeypatch.delenv("HERMES_TPS_SESSION_TTL_SECONDS", raising=False)
     with _STATE_LOCK:
         _SESSIONS.clear()
     yield
@@ -135,3 +137,45 @@ class TestConcurrentStats:
         assert errors == []
         # Verify sessions were created
         assert len(_SESSIONS) <= 5
+
+    def test_concurrent_pruning_readers_and_writers_no_crash(self, monkeypatch):
+        monkeypatch.setenv("HERMES_TPS_MAX_SESSIONS", "3")
+        barrier = threading.Barrier(40)
+        errors = []
+        observed_shapes = []
+
+        def reader(tid):
+            barrier.wait()
+            try:
+                for i in range(20):
+                    stats = get_tps_stats(f"s{(tid + i) % 10}")
+                    observed_shapes.append(tuple(sorted(stats.keys())))
+            except Exception as e:
+                errors.append(e)
+
+        def writer(tid):
+            barrier.wait()
+            try:
+                for i in range(20):
+                    _on_post_api_request(
+                        session_id=f"s{(tid + i) % 10}",
+                        usage={"output_tokens": 100},
+                        api_duration=0.5,
+                    )
+            except Exception as e:
+                errors.append(e)
+
+        threads = []
+        for i in range(20):
+            threads.append(threading.Thread(target=reader, args=(i,)))
+            threads.append(threading.Thread(target=writer, args=(i,)))
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == []
+        assert len(_SESSIONS) <= 3
+        assert observed_shapes
+        for shape in observed_shapes:
+            assert {"calls", "avg_tps", "last_tps", "peak_tps", "total_output_tokens"}.issubset(shape)

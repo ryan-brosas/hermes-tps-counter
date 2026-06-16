@@ -18,7 +18,7 @@ from typing import Any, Callable, Deque, Dict, List, Optional, Set
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = logging.getLogger(__name__)
@@ -131,14 +131,7 @@ class SessionListResponse(BaseModel):
 
 
 class BatchSessionTPSRequest(BaseModel):
-    session_ids: List[str]
-
-    @field_validator("session_ids")
-    @classmethod
-    def session_ids_not_empty(cls, v: List[str]) -> List[str]:
-        if not v:
-            raise ValueError("session_ids must not be empty")
-        return v
+    session_ids: List[str] = Field(..., min_length=1)
 
 
 class BatchSessionTPSResponse(BaseModel):
@@ -327,29 +320,29 @@ def create_app(
 
     @app.post("/api/v1/sessions/batch/tps", response_model=BatchSessionTPSResponse)
     def batch_session_tps(request: BatchSessionTPSRequest) -> BatchSessionTPSResponse:
-        """Return TPS stats for multiple sessions in one request.
+        """Return TPS stats for a bounded batch of session IDs.
 
-        Found sessions are returned in ``sessions``; IDs that do not
-        appear in the store are listed in ``missing_session_ids``.
-        Duplicate IDs in the request are normalised (first-seen order).
+        Missing sessions are reported in ``missing_session_ids`` instead of
+        failing the entire batch, and duplicate input IDs are normalized while
+        preserving first-seen order.
         """
         if store is None:
             raise HTTPException(status_code=503, detail="Database not available")
-        seen: set[str] = set()
-        unique_ids: list[str] = []
-        for sid in request.session_ids:
-            if sid not in seen:
-                seen.add(sid)
-                unique_ids.append(sid)
-        found: list[SessionTPSResponse] = []
-        missing: list[str] = []
-        for sid in unique_ids:
-            data = store.load(sid)
-            if data is not None:
-                found.append(SessionTPSResponse(**data))
+
+        unique_ids = list(dict.fromkeys(request.session_ids))
+        sessions: List[SessionTPSResponse] = []
+        missing_session_ids: List[str] = []
+        for session_id in unique_ids:
+            data = store.load(session_id)
+            if data is None:
+                missing_session_ids.append(session_id)
             else:
-                missing.append(sid)
-        return BatchSessionTPSResponse(sessions=found, missing_session_ids=missing)
+                sessions.append(SessionTPSResponse(**data))
+
+        return BatchSessionTPSResponse(
+            sessions=sessions,
+            missing_session_ids=missing_session_ids,
+        )
 
     @app.get("/api/v1/sessions/{session_id}/tps", response_model=SessionTPSResponse)
     def session_tps(session_id: str) -> SessionTPSResponse:

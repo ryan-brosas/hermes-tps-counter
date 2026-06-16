@@ -57,7 +57,11 @@ FROM session_tps;
 
 _DELETE_ONE = "DELETE FROM session_tps WHERE session_id = ?;"
 
+_DELETE_ONE_EVENT = "DELETE FROM call_events WHERE session_id = ?;"
+
 _DELETE_EXPIRED = "DELETE FROM session_tps WHERE updated_at < ?;"
+
+_DELETE_ORPHANED_EVENTS = "DELETE FROM call_events WHERE session_id NOT IN (SELECT session_id FROM session_tps);"
 
 _COUNT = "SELECT COUNT(*) FROM session_tps;"
 
@@ -286,11 +290,12 @@ class PersistentSessionStore:
             return {}
 
     def delete(self, session_id: str) -> bool:
-        """Remove one session row. Returns True if a row was deleted."""
+        """Remove one session row and its call_events. Returns True if a row was deleted."""
         if self._conn is None:
             return False
         try:
             with self._lock:
+                self._conn.execute(_DELETE_ONE_EVENT, (session_id,))
                 cur = self._conn.execute(_DELETE_ONE, (session_id,))
                 self._conn.commit()
                 return cur.rowcount > 0
@@ -299,7 +304,11 @@ class PersistentSessionStore:
             return False
 
     def delete_expired(self, max_age_seconds: float) -> int:
-        """Remove sessions older than *max_age_seconds*. Returns count deleted."""
+        """Remove sessions older than *max_age_seconds*. Returns count deleted.
+        
+        Also cleans up orphaned call_events whose session_id no longer exists
+        in session_tps.
+        """
         if self._conn is None:
             return 0
         cutoff = (
@@ -308,8 +317,10 @@ class PersistentSessionStore:
         try:
             with self._lock:
                 cur = self._conn.execute(_DELETE_EXPIRED, (cutoff,))
+                deleted = cur.rowcount
+                self._conn.execute(_DELETE_ORPHANED_EVENTS)
                 self._conn.commit()
-                return cur.rowcount
+                return deleted
         except Exception as exc:
             logger.warning("tps-counter: DB delete_expired failed: %s", exc)
             return 0

@@ -1,0 +1,59 @@
+{
+  "bead_id": "her-feat-batch-session-stats-ojy",
+  "status": "passed",
+  "verified_at": "2026-06-17",
+  "commands": [
+    {
+      "command": "pytest tests/test_api.py -v -k batch",
+      "status": "passed",
+      "evidence": "7 passed, 28 deselected"
+    },
+    {
+      "command": "pytest tests/test_api.py -v",
+      "status": "passed",
+      "evidence": "35 passed"
+    },
+    {
+      "command": "grep -A 70 'POST /api/v1/sessions/batch/tps' README.md",
+      "status": "passed",
+      "evidence": "README documents request, full-hit response, partial-miss response, duplicate normalization, and validation behavior"
+    }
+  ],
+  "requirements_met": [
+    {
+      "requirement": "Provide a batch session TPS endpoint under the existing /api/v1 namespace.",
+      "status": "passed",
+      "evidence": "POST /api/v1/sessions/batch/tps returns SessionTPSResponse-shaped entries inside sessions."
+    },
+    {
+      "requirement": "Preserve existing endpoint contracts.",
+      "status": "passed",
+      "evidence": "pytest tests/test_api.py -v passed with existing API tests plus batch coverage."
+    },
+    {
+      "requirement": "Handle missing sessions deterministically.",
+      "status": "passed",
+      "evidence": "Partial-miss and all-miss tests assert missing_session_ids with 200 responses."
+    },
+    {
+      "requirement": "Validate request input.",
+      "status": "passed",
+      "evidence": "Empty list and non-list session_ids tests return 422; duplicate input is deduplicated."
+    },
+    {
+      "requirement": "Fail cleanly when persistence is unavailable.",
+      "status": "passed",
+      "evidence": "Store None batch endpoint test returns HTTP 503 with Database not available."
+    },
+    {
+      "requirement": "Avoid unnecessary database fan-out where practical.",
+      "status": "passed",
+      "evidence": "Endpoint deduplicates before lookup, bounding calls to unique requested IDs for expected small local batches."
+    },
+    {
+      "requirement": "Document API usage.",
+      "status": "passed",
+      "evidence": "README endpoint table and examples include /api/v1/sessions/batch/tps."
+    }
+  ]
+}
