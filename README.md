@@ -75,11 +75,21 @@ For medium variant (52-75 cols), same but with `" · "` separator.
 ## API
 
 ```python
-from tps_counter import get_tps_stats
+from tps_counter import get_tps_stats, get_model_stats
 
+# Session-level stats (unchanged)
 stats = get_tps_stats(session_id)
 # {"calls": 5, "avg_tps": 98.7, "last_tps": 114.0, "peak_tps": 456.2, "total_output_tokens": 12345, "total_duration": 125.3}
+
+# Per-model stats (new)
+model_stats = get_model_stats(session_id)
+# {"gpt-4o": {"avg_tps": 120.5, "peak_tps": 456.2, "calls": 3, "total_output_tokens": 8000, "total_duration": 66.4},
+#  "claude-sonnet": {"avg_tps": 78.3, "peak_tps": 95.1, "calls": 2, "total_output_tokens": 4345, "total_duration": 55.5}}
 ```
+
+### Per-Model Tracking
+
+When switching models mid-session, per-model stats prevent cross-model pollution. Each model's `avg_tps` and `peak_tps` are tracked independently. Model data is automatically included in `_tps_snapshot["models"]` for status bar integration.
 
 ## No Configuration Required
 
