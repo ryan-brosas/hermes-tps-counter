@@ -643,6 +643,7 @@ def _cleanup_session(session_id: str) -> None:
 def _evict_if_needed() -> None:
     """Evict the session with the oldest turn_start_time if over max_sessions."""
     max_sessions = get_config().max_sessions
+    oldest_id = None
     with _STATE_LOCK:
         if len(_SESSIONS) <= max_sessions:
             return
@@ -656,3 +657,9 @@ def _evict_if_needed() -> None:
             oldest_id[:8],
             max_sessions,
         )
+    # Remove from persistent store (outside lock to avoid deadlock)
+    if oldest_id is not None and _STORE is not None:
+        try:
+            _STORE.delete(oldest_id)
+        except Exception as exc:
+            logger.debug("tps-counter: DB eviction failed for %s: %s", oldest_id[:8], exc)
