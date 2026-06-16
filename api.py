@@ -17,7 +17,7 @@ from typing import Any, Callable, Deque, Dict, List, Optional, Set
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -593,5 +593,15 @@ def create_app(
             "components": components,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+
+    # ------------------------------------------------------------------
+    # Built-in dashboard (serves at root path)
+    # ------------------------------------------------------------------
+
+    @app.get("/", response_class=HTMLResponse)
+    def dashboard() -> HTMLResponse:
+        """Serve the built-in TPS monitoring dashboard."""
+        from dashboard import DASHBOARD_HTML
+        return HTMLResponse(content=DASHBOARD_HTML)
 
     return app
