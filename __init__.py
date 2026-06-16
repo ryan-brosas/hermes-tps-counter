@@ -552,6 +552,12 @@ def _cleanup_session(session_id: str) -> None:
         _SESSIONS.pop(session_id, None)
         _MODELS.pop(session_id, None)
         _PROVIDERS.pop(session_id, None)
+    # Also remove from persistent store
+    if _STORE is not None:
+        try:
+            _STORE.delete(session_id)
+        except Exception as exc:
+            logger.debug("tps-counter: DB cleanup failed for %s: %s", session_id, exc)
     logger.debug("tps-counter: cleaned up session %s", session_id[:8])
 
 

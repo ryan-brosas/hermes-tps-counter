@@ -10,7 +10,7 @@ import logging
 import os
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -54,6 +54,12 @@ SELECT session_id, call_count, total_output_tokens, total_input_tokens,
        total_duration, peak_tps, last_call_tps, avg_tps, updated_at
 FROM session_tps;
 """
+
+_DELETE_ONE = "DELETE FROM session_tps WHERE session_id = ?;"
+
+_DELETE_EXPIRED = "DELETE FROM session_tps WHERE updated_at < ?;"
+
+_COUNT = "SELECT COUNT(*) FROM session_tps;"
 
 
 class PersistentSessionStore:
@@ -206,6 +212,48 @@ class PersistentSessionStore:
         except Exception as exc:
             logger.warning("tps-counter: DB load_all failed: %s", exc)
             return {}
+
+    def delete(self, session_id: str) -> bool:
+        """Remove one session row. Returns True if a row was deleted."""
+        if self._conn is None:
+            return False
+        try:
+            with self._lock:
+                cur = self._conn.execute(_DELETE_ONE, (session_id,))
+                self._conn.commit()
+                return cur.rowcount > 0
+        except Exception as exc:
+            logger.warning("tps-counter: DB delete failed for %s: %s", session_id, exc)
+            return False
+
+    def delete_expired(self, max_age_seconds: float) -> int:
+        """Remove sessions older than *max_age_seconds*. Returns count deleted."""
+        if self._conn is None:
+            return 0
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)
+        ).isoformat()
+        try:
+            with self._lock:
+                cur = self._conn.execute(_DELETE_EXPIRED, (cutoff,))
+                self._conn.commit()
+                return cur.rowcount
+        except Exception as exc:
+            logger.warning("tps-counter: DB delete_expired failed: %s", exc)
+            return 0
+
+    def count(self) -> int:
+        """Return total number of rows in session_tps."""
+        if self._conn is None:
+            return 0
+        try:
+            with self._lock:
+                cur = self._conn.execute(_COUNT)
+                row = cur.fetchone()
+            return row[0] if row else 0
+        except Exception as exc:
+            logger.warning("tps-counter: DB count failed: %s", exc)
+            return 0
 
     def close(self) -> None:
         """Clean shutdown of the DB connection."""
