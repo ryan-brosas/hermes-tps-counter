@@ -108,6 +108,84 @@ class TestMetricDefinitions:
         assert "tps_provider_avg" in names
         assert "tps_provider_peak" in names
 
+    def test_histograms_registered(self):
+        from prometheus_metrics import REGISTRY
+        names = {m.name for m in REGISTRY.collect()}
+        assert "tps_distribution" in names
+        assert "api_call_latency_seconds" in names
+
+
+# ---------------------------------------------------------------------------
+# TestHistogramMetrics — histogram registration, observations, output
+# ---------------------------------------------------------------------------
+
+class TestHistogramMetrics:
+    """Verify TPS and API latency histograms behave as expected."""
+
+    def test_observe_helpers_record_histogram_samples(self):
+        from prometheus_metrics import REGISTRY, observe_latency, observe_tps
+
+        observe_tps(50.0, "openai/gpt-4o")
+        observe_tps(150.0, "openai/gpt-4o")
+        observe_latency(1.5, "openai/gpt-4o")
+        observe_latency(0.3, "openai/gpt-4o")
+
+        labels = {"model": "openai/gpt-4o"}
+        assert REGISTRY.get_sample_value("tps_distribution_count", labels) == 2.0
+        assert REGISTRY.get_sample_value("api_call_latency_seconds_count", labels) == 2.0
+        assert REGISTRY.get_sample_value(
+            "tps_distribution_bucket", {**labels, "le": "100.0"}
+        ) >= 1.0
+        assert REGISTRY.get_sample_value(
+            "api_call_latency_seconds_bucket", {**labels, "le": "2.5"}
+        ) == 2.0
+
+    def test_histogram_output_contains_help_type_and_buckets(self):
+        from prometheus_metrics import generate_metrics, observe_latency, observe_tps
+
+        observe_tps(50.0, "anthropic/claude-3")
+        observe_latency(0.3, "anthropic/claude-3")
+        output = generate_metrics().decode()
+
+        assert "# HELP tps_distribution" in output
+        assert "# TYPE tps_distribution histogram" in output
+        assert "# HELP api_call_latency_seconds" in output
+        assert "# TYPE api_call_latency_seconds histogram" in output
+        for bucket in ["1.0", "5.0", "10.0", "25.0", "50.0", "100.0", "250.0", "500.0", "1000.0"]:
+            assert f'tps_distribution_bucket{{le="{bucket}",model="anthropic/claude-3"}}' in output
+        for bucket in ["0.1", "0.25", "0.5", "1.0", "2.5", "5.0", "10.0", "30.0", "60.0"]:
+            assert f'api_call_latency_seconds_bucket{{le="{bucket}",model="anthropic/claude-3"}}' in output
+
+    def test_hook_records_histogram_observations(self, _enable_prometheus):
+        import __init__ as plugin
+        from prometheus_metrics import REGISTRY
+
+        with plugin._STATE_LOCK:
+            plugin._SESSIONS.clear()
+            plugin._MODELS.clear()
+            plugin._PROVIDERS.clear()
+
+        for tokens, duration in [(100, 2.0), (300, 3.0)]:
+            plugin._on_post_api_request(
+                session_id="hist_hook_sess",
+                usage={"output_tokens": tokens, "input_tokens": 50},
+                api_duration=duration,
+                model="openai/gpt-4o",
+            )
+
+        labels = {"model": "openai/gpt-4o"}
+        assert REGISTRY.get_sample_value("tps_distribution_count", labels) == 2.0
+        assert REGISTRY.get_sample_value("api_call_latency_seconds_count", labels) == 2.0
+
+    def test_histogram_model_label_cardinality_cap(self):
+        from prometheus_metrics import REGISTRY, observe_tps
+
+        for idx in range(51):
+            observe_tps(10.0, f"model-{idx}")
+
+        assert REGISTRY.get_sample_value("tps_distribution_count", {"model": "model-49"}) == 1.0
+        assert REGISTRY.get_sample_value("tps_distribution_count", {"model": "model-50"}) is None
+
 
 # ---------------------------------------------------------------------------
 # TestUpdateMetrics — gauge.set and counter.inc correctness
@@ -270,9 +348,11 @@ class TestGracefulDegradation:
         try:
             assert pm.metrics_available() is False
             assert pm.generate_metrics() == b""
-            # update_metrics should be a no-op
+            # update_metrics/observe helpers should be no-ops
             state = _FakeState()
             pm.update_metrics("degraded", state)  # should not raise
+            pm.observe_tps(10.0, "model")  # should not raise
+            pm.observe_latency(1.0, "model")  # should not raise
         finally:
             pm._PROMETHEUS_AVAILABLE = old
 

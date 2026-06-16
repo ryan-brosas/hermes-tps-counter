@@ -364,6 +364,17 @@ pip install prometheus_client
 | `tps_model_peak` | Gauge | `session_id`, `model` | Peak TPS for a specific model |
 | `tps_provider_avg` | Gauge | `session_id`, `provider` | Average TPS for a specific provider |
 | `tps_provider_peak` | Gauge | `session_id`, `provider` | Peak TPS for a specific provider |
+| `tps_distribution` | Histogram | `model` | Per-call TPS distribution with buckets `1`, `5`, `10`, `25`, `50`, `100`, `250`, `500`, `1000` tok/s for percentile queries |
+| `api_call_latency_seconds` | Histogram | `model` | API latency distribution with buckets `0.1`, `0.25`, `0.5`, `1`, `2.5`, `5`, `10`, `30`, `60` seconds for percentile queries |
+
+Histogram percentiles can be queried in Prometheus/Grafana with `histogram_quantile()`, for example:
+
+```promql
+histogram_quantile(0.95, sum by (le, model) (rate(tps_distribution_bucket[5m])))
+histogram_quantile(0.99, sum by (le, model) (rate(api_call_latency_seconds_bucket[5m])))
+```
+
+The histogram `model` label is capped to protect Prometheus from unbounded cardinality; observations for model labels beyond the cap are discarded silently.
 
 ### Prometheus Scrape Config
 
