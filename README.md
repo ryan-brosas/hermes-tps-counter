@@ -1,34 +1,60 @@
 # hermes-tps-counter
 
-Hermes Agent plugin that tracks tokens-per-second (TPS) throughput and displays it in the status bar.
+Hermes Agent plugin that tracks tokens-per-second (TPS) throughput after LLM calls and exposes it to status-bar and in-process observability consumers.
 
 ## What It Does
 
-- Hooks into `post_api_request` to capture output tokens and API duration after each LLM call
-- Maintains per-session stats: last TPS, rolling average, peak TPS, total output tokens
-- Injects TPS data into the Hermes status bar: `⚕ glm-5.1 │ ⚡114 tok/s │ 20.2K/202.8K │ [█░░░░░░░░░] 10% │ 1m │ ⏲ 28s │ ✓ 4s`
+- Registers the `post_api_request` hook declared in `plugin.yaml` (`name: tps-counter`, version `1.0.0`).
+- Records successful LLM calls when `session_id` is present and both `usage["output_tokens"]` and `api_duration` are greater than zero.
+- Maintains per-session counters: last TPS, rolling average TPS, peak TPS, total output tokens, and total duration.
+- Injects the latest status snapshot into the active Hermes CLI agent as `agent._tps_snapshot` for status-bar integrations.
+- Provides dependency-free in-process helpers for stats, observability contract metadata, and secret-safe privacy diagnostics.
 
-## Install
+## Quickstart: Install, Restart, Verify
+
+From this repository checkout, copy the plugin into a Hermes plugins directory, restart Hermes, and trigger an LLM call:
 
 ```bash
-# Copy plugin to Hermes plugins directory
-cp -r . ~/.hermes/plugins/tps-counter/
+# From the hermes-tps-counter repository root
+mkdir -p ~/.hermes/plugins
+rm -rf ~/.hermes/plugins/tps-counter
+cp -R . ~/.hermes/plugins/tps-counter
 
-# Restart Hermes to load the plugin
+# Restart Hermes so the plugin loader sees plugin.yaml and registers post_api_request.
+# Then run a normal Hermes LLM interaction that produces output tokens.
 ```
 
-## Status Bar Integration
+Verification checklist:
 
-The plugin exposes TPS data via `agent._tps_snapshot` which the status bar reads. This requires small patches to the Hermes agent codebase:
+1. Confirm the copied plugin contains `~/.hermes/plugins/tps-counter/plugin.yaml` with `name: tps-counter` and hook `post_api_request`.
+2. Restart Hermes; look for a plugin-loader log line equivalent to `tps-counter plugin registered` if your runtime logs plugin registration.
+3. Make a successful LLM call with output tokens and a positive API duration.
+4. Verify TPS through one of the currently available in-process surfaces:
+   - Status-bar integration reads `agent._tps_snapshot` on the active CLI agent once the status-bar patch points below are present.
+   - Python consumers can call `get_tps_stats(session_id)` for the active session.
 
-### 1. `hermes_cli/__init__.py` — Add active CLI instance global
+The plugin does not install a REST route, WebSocket stream, Prometheus exporter, package manager dependency, or standalone daemon on this branch.
+
+## Status-Bar Integration
+
+The plugin produces status-bar data, but Hermes core must still expose the active CLI instance and render the fragment. The expected flow is:
+
+1. Hermes starts the CLI and stores the active CLI instance in `hermes_cli._ACTIVE_CLI_INSTANCE`.
+2. The plugin receives `post_api_request` after a successful LLM call.
+3. The plugin calculates TPS and assigns the latest privacy-treated payload to `agent._tps_snapshot` on that active CLI agent.
+4. The status-bar snapshot builder copies safe TPS fields into its own render snapshot.
+5. The fragment renderer shows a short label such as `⚡114 tok/s` only when the value is fresh, session-matched, and positive.
+
+### Required Hermes Patch Points
+
+#### 1. `hermes_cli/__init__.py` — active CLI instance global
 
 ```python
-# At the bottom of the file:
+# At module scope:
 _ACTIVE_CLI_INSTANCE = None
 ```
 
-### 2. `cli.py` — Register CLI instance on startup
+#### 2. `cli.py` — register the active CLI instance on startup
 
 After `cli = HermesCLI(...)`:
 
@@ -40,65 +66,34 @@ except Exception:
     pass
 ```
 
-### 3. `cli.py` — Inject TPS into status bar snapshot
+#### 3. `cli.py` — copy TPS into the status-bar snapshot
 
-In `_get_status_bar_snapshot()`, before `return snapshot`:
-
-```python
-# Inject TPS data from plugins (e.g. tps-counter)
-tps = getattr(agent, "_tps_snapshot", None)
-if tps:
-    tps_val = tps.get("last_tps", 0)
-    if tps_val > 0:
-        snapshot["tps_last"] = tps_val
-        snapshot["tps_avg"] = tps.get("avg_tps", 0)
-        snapshot["tps_label"] = f"⚡{tps_val:.0f} tok/s"
-    else:
-        snapshot["tps_label"] = ""
-else:
-    snapshot["tps_label"] = ""
-```
-
-### Stale / Session-Mismatch Handling
-
-Every `_tps_snapshot` includes freshness metadata that consumers can use to suppress stale or cross-session TPS values:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `updated_at` | `float` | Wall-clock time (`time.time()`) when the snapshot was created. Useful for logging and diagnostics. |
-| `updated_monotonic` | `float` | Monotonic time (`time.monotonic()`) when the snapshot was created. Use this for robust age calculations that survive system clock changes. |
-| `session_id` | `str` | The session that produced this snapshot. In default mode this is the raw session id for backward compatibility; in privacy mode it follows the configured field treatment. Compare against the active session after applying the same treatment policy to detect cross-session data leakage. |
-
-**Recommended stale-threshold behavior** — consumers should compare `time.monotonic() - snapshot["updated_monotonic"]` against a configurable threshold (e.g. 30–120 seconds). If the age exceeds the threshold, suppress or gray-out the TPS display rather than showing potentially stale data.
-
-**Recommended session-mismatch behavior** — if `snapshot["session_id"]` does not match the active session identifier, consumers should ignore or reset the TPS display. With privacy mode disabled, compare the raw active session id as before. With privacy pseudonymization enabled, compare the snapshot value to the same policy-treated active session id; do not compare a raw active id to a pseudonymized snapshot id.
-
-**Example with freshness checks:**
+In `_get_status_bar_snapshot()`, before `return snapshot`, consume `agent._tps_snapshot` defensively:
 
 ```python
 import time
 
+STALE_THRESHOLD_SECONDS = 60
+
 tps = getattr(agent, "_tps_snapshot", None)
+snapshot["tps_label"] = ""
+
 if tps:
     age = time.monotonic() - tps.get("updated_monotonic", 0)
     session_match = tps.get("session_id") == active_session_id
-    if age < STALE_THRESHOLD and session_match:
+    if age <= STALE_THRESHOLD_SECONDS and session_match:
         tps_val = tps.get("last_tps", 0)
         if tps_val > 0:
+            snapshot["tps_last"] = tps_val
+            snapshot["tps_avg"] = tps.get("avg_tps", 0)
             snapshot["tps_label"] = f"⚡{tps_val:.0f} tok/s"
-        else:
-            snapshot["tps_label"] = ""
-    else:
-        snapshot["tps_label"] = ""  # Suppress stale or mismatched data
-else:
-    snapshot["tps_label"] = ""
 ```
 
-All freshness fields are **additive and backward compatible** — existing consumers that do not read them will continue to work unchanged. The stale-threshold value is implementation-defined and should be tuned to match the consumer's rendering cadence and acceptable staleness window.
+If privacy mode pseudonymizes, redacts, or omits `session_id`, compare the active session identifier after applying the same policy described by `get_observability_contract()["privacy"]["field_treatments"]`; do not compare a raw active session id to a privacy-treated snapshot id.
 
-### 4. `cli.py` — Render TPS in status bar fragments
+#### 4. `cli.py` — render the TPS status fragment
 
-In `_get_status_bar_fragments()`, wide variant (>=76 cols), after the model_short fragment:
+In `_get_status_bar_fragments()`, add the label only when non-empty. For the wide variant (>=76 columns), place it after the model fragment:
 
 ```python
 tps_label = snapshot.get("tps_label", "")
@@ -107,99 +102,122 @@ if tps_label:
     frags.append(("class:status-bar-dim", " │ "))
 ```
 
-For medium variant (52-75 cols), same but with `" · "` separator.
+For medium layouts (52-75 columns), use the same label with the existing medium separator style, such as `" · "`.
 
-## API
+### Snapshot Fields
+
+`agent._tps_snapshot` is the latest outbound status payload for one successful call. Current fields are:
+
+| Field | Presence | Description |
+|-------|----------|-------------|
+| `last_tps` | Required | Unrounded TPS for the most recent successful API call: `output_tokens / api_duration`. |
+| `avg_tps` | Required | Unrounded rolling average for the session: total output tokens / total API duration. |
+| `peak_tps` | Required | Highest `last_tps` seen for the session. |
+| `output_tokens` | Required | Cumulative output tokens recorded for the session. |
+| `updated_at` | Required | Wall-clock `time.time()` timestamp for logging/diagnostics. Do not use it for robust age checks. |
+| `updated_monotonic` | Required | `time.monotonic()` timestamp for stale-display checks. |
+| `session_id` | Required unless omitted by privacy policy | Session that produced the snapshot; privacy mode may pseudonymize, redact, or omit it. |
+| `model` | Optional | Present when the hook receives `model`; privacy mode may transform it. |
+| `provider` | Optional | Present when the hook receives `provider`; privacy mode may transform it. |
+
+Display rules for consumers:
+
+- Show TPS only when `last_tps > 0`.
+- Leave `tps_label` empty for missing snapshots, zero/negative TPS, stale snapshots, or session mismatches. This avoids misleading labels.
+- Calculate age with `time.monotonic() - snapshot["updated_monotonic"]`; use a consumer-defined threshold, commonly 30-120 seconds.
+- Suppress or gray-out values beyond that threshold.
+- Ignore or clear the display when `snapshot["session_id"]` does not match the active session after applying the same privacy treatment policy.
+
+## In-Process API Helper
+
+Use `get_tps_stats(session_id)` for read-only session stats inside the same Python process:
 
 ```python
 from tps_counter import get_tps_stats
 
 stats = get_tps_stats(session_id)
-# {"calls": 5, "avg_tps": 98.7, "last_tps": 114.0, "peak_tps": 456.2, "total_output_tokens": 12345, "total_duration": 125.3}
+# Observed session:
+# {
+#   "calls": 5,
+#   "avg_tps": 98.7,
+#   "last_tps": 114.0,
+#   "peak_tps": 456.2,
+#   "total_output_tokens": 12345,
+#   "total_duration": 125.3,
+# }
 ```
+
+For an unknown or unobserved session, the helper returns zero values without `total_duration`:
+
+```python
+{"calls": 0, "avg_tps": 0, "last_tps": 0, "peak_tps": 0, "total_output_tokens": 0}
+```
+
+`get_tps_stats(session_id)` expects the raw internal `session_id`; privacy redaction is applied to outbound observability payloads, not to `_SESSIONS` lookup correctness.
 
 ## Observability Contract
 
-The plugin exposes a machine-readable observability contract for dashboards,
-status-bar integrations, and compatibility checks:
+The machine-readable contract describes what consumers may rely on without scanning live sessions or importing optional server dependencies:
 
 ```python
 from tps_counter import get_observability_contract
 
 contract = get_observability_contract()
-# contract["contract"]["contract_version"] == "1.0.0"
+assert contract["contract"]["contract_version"] == "1.0.0"
 ```
 
-On this branch the contract is available as an in-process Python helper only.
-There is no REST router, WebSocket stream, or Prometheus exporter module in the
-current plugin files, so the contract marks those optional surfaces with
-`available: false` and explains the reason. If a future branch adds a REST
-adapter, consumers should prefer a documented read-only endpoint such as
-`/api/v1/observability/contract` when the contract marks it available.
+Current contract surfaces:
 
-The contract includes these stable top-level sections:
+| Surface | Availability on this branch | Consumer guidance |
+|---------|-----------------------------|-------------------|
+| `agent._tps_snapshot` | Available | Latest status-bar snapshot on the active CLI agent after successful hooks. Apply freshness and session checks. |
+| `get_tps_stats(session_id)` | Available | In-process read-only helper for one raw session id. Missing sessions return zero values. |
+| `get_observability_contract()` | Available | Static, dependency-free metadata; reading it does not create session state. |
+| `get_privacy_diagnostics()` | Available | Secret-safe privacy mode diagnostics. |
+| REST observability route | Unavailable when the contract marks `available: false` | No REST router is present in this branch; use `get_observability_contract()` instead. |
+| WebSocket stream | Unavailable when the contract marks `available: false` | Do not assume TPS events are emitted; use status snapshots or in-process helpers. |
+| Prometheus exporter | Unavailable when the contract marks `available: false` | Do not scrape plugin-specific metrics until a future contract lists metric names, units, and labels. |
 
-- `contract` — contract name/version plus plugin name/version from
-  `plugin.yaml`.
-- `compatibility` — additive-compatibility rules and runtime-overhead notes.
-- `privacy` — active redaction mode, covered identifier fields, per-field
-  treatments (`raw`, `pseudonymized`, `redacted`, or `omitted`), and safe
-  diagnostics that never expose salts or secrets.
-- `status_snapshot` — metadata for `agent._tps_snapshot` fields including
-  `last_tps`, `avg_tps`, `peak_tps`, `output_tokens`, `updated_at`,
-  `updated_monotonic`, and `session_id`.
-- `api` — metadata for `get_tps_stats(session_id)` response fields and the
-  zero-value behavior for missing sessions.
-- `websocket` — availability and event metadata when a WebSocket surface exists;
-  currently unavailable on this branch.
-- `prometheus` — metric names/types/units/labels when an exporter exists;
-  currently unavailable on this branch.
-
-### Contract Versioning and Consumer Rules
-
-Consumers should validate the required sections for the `contract_version` they
-support, but they must ignore unknown fields or sections. Additive metadata can
-appear without breaking compatible consumers; breaking changes require a new
-major contract version.
-
-Status-bar consumers should continue to apply the stale and session-mismatch
-rules above: calculate age with `updated_monotonic`, suppress or gray-out stale
-TPS values, and ignore snapshots whose `session_id` does not match the active
-session.
-
-Prometheus consumers should keep label cardinality low. Every unique label set
-creates a time series, so avoid unbounded labels such as raw session ids, user
-ids, prompts, or request ids unless a future contract version explicitly marks a
-dimension as bounded or safe. When privacy mode is enabled, prefer omitted or
-coarsely redacted labels for high-cardinality dimensions unless deterministic
-grouping is required and the cardinality impact is understood.
+The contract includes additive top-level sections for `contract`, `compatibility`, `privacy`, `status_snapshot`, `api`, `websocket`, and `prometheus`. Compatible consumers should ignore unknown fields or sections. Breaking changes require a new major `contract_version`.
 
 ## Privacy Redaction
 
-By default the plugin is disabled/raw-compatible for privacy so existing status
-bar integrations and `snapshot["session_id"]` comparisons keep working unchanged.
-Set `HERMES_TPS_PRIVACY_MODE` to `pseudonymized`, `redacted`, or `omitted` to
-transform covered identifiers before they leave trusted in-process state.
+Default behavior is raw/backward-compatible: existing status-bar integrations and raw `snapshot["session_id"]` comparisons continue to work unless privacy mode is enabled.
 
-Covered fields are `session_id`, `model`, and `provider`; add future
-identifier-like metadata with `HERMES_TPS_PRIVACY_FIELDS` as a comma-separated
-list. Per-field overrides can be supplied with `HERMES_TPS_PRIVACY_TREATMENTS`,
-for example `provider=redacted,tenant_id=omitted`. The secret/salt is read from
-`HERMES_TPS_PRIVACY_SALT` and an optional grouping scope from
-`HERMES_TPS_PRIVACY_SCOPE`. These values are configuration inputs only: they are
-not emitted in logs, snapshots, API helper responses, contracts, or examples.
+Configure privacy with these environment variables:
+
+| Variable | Purpose |
+|----------|---------|
+| `HERMES_TPS_PRIVACY_MODE` | `disabled`/raw-compatible by default; accepts pseudonymized, redacted, or omitted modes (common aliases are normalized by the plugin). |
+| `HERMES_TPS_PRIVACY_SALT` | Secret salt for deterministic pseudonyms. Do not put real secret values in docs, logs, or examples. |
+| `HERMES_TPS_PRIVACY_SCOPE` | Optional grouping scope for pseudonyms; changing it changes pseudonym outputs. |
+| `HERMES_TPS_PRIVACY_FIELDS` | Comma-separated additional identifier-like fields to treat as privacy-covered. Built-ins are `session_id`, `model`, and `provider`. |
+| `HERMES_TPS_PRIVACY_TREATMENTS` | Per-field overrides such as `provider=redacted,tenant_id=omitted`. Valid treatments are `raw`, `pseudonymized`, `redacted`, and `omitted`. |
 
 Treatment meanings:
 
 | Treatment | Behavior |
 |-----------|----------|
 | `raw` | Emit the identifier unchanged. This is the disabled/default behavior. |
-| `pseudonymized` | Emit a deterministic HMAC-SHA256 pseudonym scoped by field and configured scope. The same raw value with the same salt/scope gives the same pseudonym for grouping; changing the salt or scope changes the output. |
+| `pseudonymized` | Emit a deterministic HMAC-SHA256 pseudonym scoped by field and configured scope. |
 | `redacted` | Emit the constant `[redacted]` marker. |
 | `omitted` | Remove the field from outbound payloads when the surface can tolerate omission. |
 
-Raw identifiers remain internal for `_SESSIONS` lookup and `get_tps_stats(session_id)` input. Consumers that compare session ids should either leave privacy mode disabled or compare against the same treated value described by `get_observability_contract()["privacy"]["field_treatments"]`.
+Secrets and raw identifiers are not emitted by privacy diagnostics or the observability contract when privacy mode is enabled. Snapshots and debug logs are privacy-treated at outbound boundaries; raw identifiers remain internal for session lookup and TPS aggregation.
+
+## Troubleshooting
+
+| Symptom | Likely cause | Checks and remediation |
+|---------|--------------|------------------------|
+| No TPS display in the status bar | Plugin not copied/enabled, Hermes not restarted, status-bar patches missing, no successful LLM call yet, or no active CLI instance for injection. | Verify `~/.hermes/plugins/tps-counter/plugin.yaml`; restart Hermes; confirm the hook is `post_api_request`; make a successful LLM call; confirm `hermes_cli._ACTIVE_CLI_INSTANCE` points to the running CLI and the status bar reads `agent._tps_snapshot`. |
+| TPS stats stay zero | The session is unknown/unobserved, the call had `output_tokens <= 0`, `api_duration <= 0`, or `session_id` was missing. | Call `get_tps_stats(raw_session_id)` after a successful generation; check provider usage parsing supplies `usage["output_tokens"]`; check API duration is positive. Unknown sessions intentionally return zero values. |
+| TPS appears briefly but later becomes stale | Consumer renders the last label without checking `updated_monotonic`, or the stale threshold is too long. | Compute `time.monotonic() - snapshot["updated_monotonic"]`; suppress or gray-out values older than the chosen 30-120 second threshold; clear `tps_label` when stale. |
+| TPS from another session appears | The status-bar consumer is not comparing `snapshot["session_id"]` to the active session, or privacy mode changed the snapshot identifier. | Compare against the active session before rendering. If privacy is enabled, apply the same field treatment before comparing; never compare a raw active id to `session_id:pseudonym:...`, `[redacted]`, or an omitted field. |
+| `session_id`, `model`, or `provider` looks pseudonymized/redacted/missing | Privacy mode or `HERMES_TPS_PRIVACY_TREATMENTS` is active. | Inspect `get_observability_contract()["privacy"]` or `get_privacy_diagnostics()` for mode and field treatments. This is expected; salts and raw secrets should not appear in outputs. |
+| REST, WebSocket, or Prometheus integration cannot find an endpoint/exporter | Those optional surfaces are not implemented on this branch and the contract marks them unavailable. | Check `get_observability_contract()`; when `available: false`, use `agent._tps_snapshot`, `get_tps_stats(session_id)`, or `get_observability_contract()` instead. Do not assume route paths or metric names exist. |
+| Plugin registration fails | Wrong plugin location, missing/invalid `plugin.yaml`, Hermes not restarted, hook name mismatch, or loader log errors. | Confirm the copied directory includes `plugin.yaml` with `name: tps-counter`, `version: "1.0.0"`, and `hooks: [post_api_request]`; restart Hermes; inspect plugin-loader logs for import or registration errors. |
+| Status-bar label is always blank even though stats exist | `last_tps <= 0`, stale/session checks suppress it, or render fragments only add non-empty labels. | Inspect `agent._tps_snapshot` in-process; verify `last_tps > 0`, age is below threshold, session matches, and `_get_status_bar_fragments()` appends `snapshot["tps_label"]` when present. |
 
 ## Default Configuration
 
-Works out of the box with privacy redaction disabled for backward compatibility; set the privacy environment variables above only when redaction is desired.
+The plugin works out of the box with privacy redaction disabled for backward compatibility. Set the privacy environment variables only when outbound observability identifiers need pseudonymization, redaction, or omission.
