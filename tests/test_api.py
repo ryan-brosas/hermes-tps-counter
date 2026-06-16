@@ -4,19 +4,24 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+import __init__ as tps_counter
 
 from __init__ import (
     get_observability_contract,
+    get_retention_diagnostics,
     get_tps_stats,
     register,
     _get_session,
+    _on_post_api_request,
     _SESSIONS,
     _STATE_LOCK,
 )
 
 
 @pytest.fixture(autouse=True)
-def clear_sessions():
+def clear_sessions(monkeypatch):
+    monkeypatch.delenv("HERMES_TPS_MAX_SESSIONS", raising=False)
+    monkeypatch.delenv("HERMES_TPS_SESSION_TTL_SECONDS", raising=False)
     with _STATE_LOCK:
         _SESSIONS.clear()
     yield
@@ -57,13 +62,103 @@ class TestGetTpsStats:
         assert stats["avg_tps"] == round(100 / 3.0, 1)
         assert stats["total_duration"] == round(3.0, 2)
 
+    def test_stats_read_does_not_create_missing_session(self):
+        assert get_tps_stats("missing") == {
+            "calls": 0,
+            "avg_tps": 0,
+            "last_tps": 0,
+            "peak_tps": 0,
+            "total_output_tokens": 0,
+        }
+        assert "missing" not in _SESSIONS
+
+
+class TestSessionRetention:
+    def test_default_retention_disabled_preserves_unbounded_behavior(self):
+        for i in range(5):
+            _on_post_api_request(session_id=f"s{i}", usage={"output_tokens": 10}, api_duration=1.0)
+
+        assert len(_SESSIONS) == 5
+        diagnostics = get_retention_diagnostics()
+        assert diagnostics["enabled"] is False
+        assert diagnostics["max_sessions"]["enabled"] is False
+        assert diagnostics["session_ttl_seconds"]["enabled"] is False
+
+    def test_max_sessions_prunes_oldest_and_preserves_current(self, monkeypatch):
+        monkeypatch.setenv("HERMES_TPS_MAX_SESSIONS", "2")
+        old = _get_session("old")
+        old.record(10, 1.0)
+        old.last_updated_monotonic = 10.0
+        recent = _get_session("recent")
+        recent.record(10, 1.0)
+        recent.last_updated_monotonic = 20.0
+
+        monkeypatch.setattr(tps_counter.time, "monotonic", lambda: 30.0)
+        _on_post_api_request(session_id="current", usage={"output_tokens": 10}, api_duration=1.0)
+
+        assert set(_SESSIONS) == {"recent", "current"}
+        assert get_tps_stats("old") == {
+            "calls": 0,
+            "avg_tps": 0,
+            "last_tps": 0,
+            "peak_tps": 0,
+            "total_output_tokens": 0,
+        }
+        assert "old" not in _SESSIONS
+
+    def test_session_ttl_prunes_stale_without_real_sleep(self, monkeypatch):
+        monkeypatch.setenv("HERMES_TPS_SESSION_TTL_SECONDS", "5")
+        stale = _get_session("stale")
+        stale.record(10, 1.0)
+        stale.last_updated_monotonic = 10.0
+        recent = _get_session("recent")
+        recent.record(10, 1.0)
+        recent.last_updated_monotonic = 27.0
+
+        monkeypatch.setattr(tps_counter.time, "monotonic", lambda: 30.0)
+        _on_post_api_request(session_id="current", usage={"output_tokens": 10}, api_duration=1.0)
+
+        assert "stale" not in _SESSIONS
+        assert "recent" in _SESSIONS
+        assert "current" in _SESSIONS
+        assert get_tps_stats("stale") == {
+            "calls": 0,
+            "avg_tps": 0,
+            "last_tps": 0,
+            "peak_tps": 0,
+            "total_output_tokens": 0,
+        }
+
+    @pytest.mark.parametrize(
+        "env_name,env_value,diagnostic_key",
+        [
+            ("HERMES_TPS_MAX_SESSIONS", "", "max_sessions"),
+            ("HERMES_TPS_MAX_SESSIONS", "0", "max_sessions"),
+            ("HERMES_TPS_MAX_SESSIONS", "-3", "max_sessions"),
+            ("HERMES_TPS_MAX_SESSIONS", "not-a-number", "max_sessions"),
+            ("HERMES_TPS_SESSION_TTL_SECONDS", "", "session_ttl_seconds"),
+            ("HERMES_TPS_SESSION_TTL_SECONDS", "0", "session_ttl_seconds"),
+            ("HERMES_TPS_SESSION_TTL_SECONDS", "-1", "session_ttl_seconds"),
+            ("HERMES_TPS_SESSION_TTL_SECONDS", "not-a-number", "session_ttl_seconds"),
+        ],
+    )
+    def test_invalid_or_disabled_env_values_do_not_prune(self, monkeypatch, env_name, env_value, diagnostic_key):
+        monkeypatch.setenv(env_name, env_value)
+        for i in range(4):
+            _on_post_api_request(session_id=f"s{i}", usage={"output_tokens": 10}, api_duration=1.0)
+
+        assert len(_SESSIONS) == 4
+        diagnostics = get_retention_diagnostics()
+        assert diagnostics["enabled"] is False
+        assert diagnostics[diagnostic_key]["enabled"] is False
+
 
 class TestObservabilityContract:
     def test_contract_is_json_serializable_with_required_sections(self):
         contract = get_observability_contract()
         assert isinstance(contract, dict)
         json.dumps(contract, sort_keys=True)
-        assert {"contract", "compatibility", "status_snapshot", "api", "websocket", "prometheus"}.issubset(
+        assert {"contract", "compatibility", "privacy", "retention", "status_snapshot", "api", "websocket", "prometheus"}.issubset(
             contract.keys()
         )
 
@@ -127,6 +222,25 @@ class TestObservabilityContract:
         assert _SESSIONS == {}
         get_observability_contract()
         assert _SESSIONS == {}
+
+    def test_contract_exposes_retention_policy_without_identifiers(self, monkeypatch):
+        monkeypatch.setenv("HERMES_TPS_MAX_SESSIONS", "7")
+        monkeypatch.setenv("HERMES_TPS_SESSION_TTL_SECONDS", "12.5")
+        _get_session("raw-session-id").record(10, 1.0)
+
+        contract = get_observability_contract()
+        retention = contract["retention"]
+        json.dumps(retention, sort_keys=True)
+
+        assert retention["enabled"] is True
+        assert retention["configuration"]["max_sessions_env"] == "HERMES_TPS_MAX_SESSIONS"
+        assert retention["configuration"]["session_ttl_seconds_env"] == "HERMES_TPS_SESSION_TTL_SECONDS"
+        assert retention["max_sessions"] == {"enabled": True, "value": 7, "status": "enabled"}
+        assert retention["session_ttl_seconds"] == {"enabled": True, "value": 12.5, "status": "enabled"}
+        assert retention["identifier_material_exposed"] is False
+        serialized = json.dumps(retention)
+        assert "raw-session-id" not in serialized
+        assert "secret" not in serialized.lower()
 
 
 class TestRegister:
