@@ -472,6 +472,21 @@ def _on_post_api_request(**kwargs: Any) -> None:
 _API_SERVER: Optional[Any] = None  # uvicorn.Server reference for shutdown
 
 
+def _get_diagnostics_snapshot() -> Dict[str, Any]:
+    """Return a snapshot of in-memory state for the diagnostics endpoint.
+
+    Thread-safe: acquires _STATE_LOCK for consistent reads.
+    Returns dict with keys: sessions, models, providers, max_sessions.
+    """
+    with _STATE_LOCK:
+        return {
+            "sessions": list(_SESSIONS.keys()),
+            "models": {sid: list(models.keys()) for sid, models in _MODELS.items()},
+            "providers": {sid: list(provs.keys()) for sid, provs in _PROVIDERS.items()},
+            "max_sessions": get_config().max_sessions,
+        }
+
+
 def _start_api_server(store: Any, host: str, port: int) -> None:
     """Start the FastAPI TPS API in a daemon thread."""
     global _API_SERVER, _WS_MANAGER, _EVENT_LOOP
@@ -480,7 +495,7 @@ def _start_api_server(store: Any, host: str, port: int) -> None:
         import uvicorn
         from api import create_app
 
-        app = create_app(store)
+        app = create_app(store, get_diagnostics=_get_diagnostics_snapshot)
         # Capture the ConnectionManager for hook-triggered broadcasts
         _WS_MANAGER = getattr(app.state, "ws_manager", None)
 

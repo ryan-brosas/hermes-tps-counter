@@ -159,11 +159,14 @@ class TrendResponse(BaseModel):
 # App factory
 # ---------------------------------------------------------------------------
 
-def create_app(store: Any) -> FastAPI:
+def create_app(store: Any, get_diagnostics: Any = None) -> FastAPI:
     """Build and return a configured FastAPI application.
 
     Args:
         store: A ``PersistentSessionStore`` instance used as the data source.
+        get_diagnostics: Optional callable that returns in-memory state snapshot
+            for the diagnostics endpoint. Signature: ``() -> dict`` returning
+            ``{sessions: list, models: dict, providers: dict, max_sessions: int}``.
     """
     app = FastAPI(
         title="TPS Counter API",
@@ -308,5 +311,183 @@ def create_app(store: Any) -> FastAPI:
             pass
         finally:
             manager.disconnect(websocket)
+
+    # ------------------------------------------------------------------
+    # Diagnostics helper functions
+    # ------------------------------------------------------------------
+
+    def _collect_memory_status() -> Dict[str, Any]:
+        """Collect in-memory session state via the diagnostics callback."""
+        if get_diagnostics is None:
+            return {"status": "unavailable", "sessions": 0, "max_sessions": 0,
+                    "models": 0, "providers": 0}
+        try:
+            snapshot = get_diagnostics()
+            return {
+                "status": "ok",
+                "sessions": len(snapshot.get("sessions", [])),
+                "max_sessions": snapshot.get("max_sessions", 0),
+                "models": len(snapshot.get("models", {})),
+                "providers": len(snapshot.get("providers", {})),
+            }
+        except Exception:
+            return {"status": "degraded", "sessions": 0, "max_sessions": 0,
+                    "models": 0, "providers": 0}
+
+    def _collect_sqlite_status() -> Dict[str, Any]:
+        """Collect SQLite store connectivity and counts."""
+        if store is None:
+            return {"status": "unavailable", "connected": False,
+                    "session_count": 0, "event_count": 0, "retention_days": 0}
+        try:
+            session_count = store.count()
+            # Event count via a lightweight query
+            event_count = 0
+            try:
+                with store._lock:
+                    cur = store._conn.execute("SELECT COUNT(*) FROM call_events")
+                    row = cur.fetchone()
+                    event_count = row[0] if row else 0
+            except Exception:
+                pass
+            return {
+                "status": "ok",
+                "connected": True,
+                "session_count": session_count,
+                "event_count": event_count,
+                "retention_days": store._retention_days,
+            }
+        except Exception:
+            return {"status": "degraded", "connected": False,
+                    "session_count": 0, "event_count": 0, "retention_days": 0}
+
+    def _collect_prometheus_status() -> Dict[str, Any]:
+        """Collect Prometheus metrics registry status."""
+        try:
+            from prometheus_metrics import metrics_available as _ma, REGISTRY as _reg
+            enabled = _ma()
+            collector_count = 0
+            if enabled and _reg is not None:
+                try:
+                    collector_count = len(list(_reg.collect()))
+                except Exception:
+                    pass
+            return {
+                "status": "ok" if enabled else "unavailable",
+                "enabled": enabled,
+                "available": enabled,
+                "registered_collectors": collector_count,
+            }
+        except ImportError:
+            return {"status": "unavailable", "enabled": False,
+                    "available": False, "registered_collectors": 0}
+        except Exception:
+            return {"status": "degraded", "enabled": False,
+                    "available": False, "registered_collectors": 0}
+
+    def _collect_websocket_status() -> Dict[str, Any]:
+        """Collect WebSocket connection manager status."""
+        try:
+            ws_manager = getattr(app.state, "ws_manager", None)
+            if ws_manager is None:
+                return {"status": "degraded", "enabled": False,
+                        "active_connections": 0}
+            return {
+                "status": "ok",
+                "enabled": True,
+                "active_connections": ws_manager.count,
+            }
+        except Exception:
+            return {"status": "degraded", "enabled": False,
+                    "active_connections": 0}
+
+    def _collect_health_counters() -> Dict[str, Any]:
+        """Collect operational health counter values from Prometheus."""
+        try:
+            from prometheus_metrics import (
+                metrics_available as _ma,
+                _usage_extraction_failures as _uef,
+                _db_write_errors as _dwe,
+                _db_read_errors as _dre,
+                _ws_broadcast_failures as _wbf,
+                _ws_dead_clients as _wdc,
+            )
+            if not _ma():
+                return {"status": "unavailable", "usage_extraction_failures": 0,
+                        "db_write_errors": 0, "db_read_errors": 0,
+                        "ws_broadcast_failures": 0, "ws_dead_clients": 0}
+
+            def _get_counter_value(counter: Any) -> int:
+                """Safely get the current value of a Prometheus counter."""
+                if counter is None:
+                    return 0
+                try:
+                    # Method 1: _value attribute (prometheus_client >= 0.14)
+                    val = getattr(counter, "_value", None)
+                    if val is not None and hasattr(val, "get"):
+                        return int(val.get())
+                except Exception:
+                    pass
+                try:
+                    # Method 2: collect and extract from samples
+                    for family in counter.collect():
+                        for sample in family.samples:
+                            return int(sample.value)
+                except Exception:
+                    pass
+                return 0
+
+            return {
+                "status": "ok",
+                "usage_extraction_failures": _get_counter_value(_uef),
+                "db_write_errors": _get_counter_value(_dwe),
+                "db_read_errors": _get_counter_value(_dre),
+                "ws_broadcast_failures": _get_counter_value(_wbf),
+                "ws_dead_clients": _get_counter_value(_wdc),
+            }
+        except ImportError:
+            return {"status": "unavailable", "usage_extraction_failures": 0,
+                    "db_write_errors": 0, "db_read_errors": 0,
+                    "ws_broadcast_failures": 0, "ws_dead_clients": 0}
+        except Exception:
+            return {"status": "degraded", "usage_extraction_failures": 0,
+                    "db_write_errors": 0, "db_read_errors": 0,
+                    "ws_broadcast_failures": 0, "ws_dead_clients": 0}
+
+    # ------------------------------------------------------------------
+    # Health diagnostics endpoint
+    # ------------------------------------------------------------------
+
+    @app.get("/api/v1/health/diagnostics")
+    def health_diagnostics() -> Dict[str, Any]:
+        """Comprehensive health diagnostics for all plugin components.
+
+        Returns JSON with component-level status for memory, SQLite,
+        Prometheus, WebSocket, and operational health counters.
+        """
+        components = {
+            "memory": _collect_memory_status(),
+            "sqlite": _collect_sqlite_status(),
+            "prometheus": _collect_prometheus_status(),
+            "websocket": _collect_websocket_status(),
+            "health_counters": _collect_health_counters(),
+        }
+
+        # Determine overall status
+        statuses = [c["status"] for c in components.values()]
+        if all(s == "ok" for s in statuses):
+            overall = "ok"
+        elif any(s == "unavailable" for s in statuses):
+            # Check if majority are unavailable
+            unavail_count = sum(1 for s in statuses if s == "unavailable")
+            overall = "unavailable" if unavail_count > len(statuses) / 2 else "degraded"
+        else:
+            overall = "degraded"
+
+        return {
+            "status": overall,
+            "components": components,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
 
     return app

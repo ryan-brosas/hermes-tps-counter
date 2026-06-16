@@ -129,6 +129,7 @@ The API runs on `127.0.0.1:9127` by default. FastAPI auto-generates interactive 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/v1/health` | Health check — verify API and DB are reachable |
+| `GET` | `/api/v1/health/diagnostics` | Comprehensive component-level health diagnostics |
 | `GET` | `/api/v1/sessions` | List all sessions with TPS stats |
 | `GET` | `/api/v1/sessions/{session_id}/tps` | TPS stats for a single session |
 | `GET` | `/api/v1/summary` | Aggregated TPS summary across all sessions |
@@ -144,6 +145,56 @@ The API runs on `127.0.0.1:9127` by default. FastAPI auto-generates interactive 
   "db": "connected"
 }
 ```
+
+### `GET /api/v1/health/diagnostics`
+
+Comprehensive component-level health diagnostics. Returns status for all plugin subsystems in a single request. Use this when debugging plugin issues — it replaces the need to check multiple endpoints separately.
+
+```json
+{
+  "status": "ok",
+  "components": {
+    "memory": {
+      "status": "ok",
+      "sessions": 3,
+      "max_sessions": 50,
+      "models": 5,
+      "providers": 2
+    },
+    "sqlite": {
+      "status": "ok",
+      "connected": true,
+      "session_count": 3,
+      "event_count": 127,
+      "retention_days": 7
+    },
+    "prometheus": {
+      "status": "ok",
+      "enabled": true,
+      "available": true,
+      "registered_collectors": 15
+    },
+    "websocket": {
+      "status": "ok",
+      "enabled": true,
+      "active_connections": 2
+    },
+    "health_counters": {
+      "status": "ok",
+      "usage_extraction_failures": 0,
+      "db_write_errors": 0,
+      "db_read_errors": 0,
+      "ws_broadcast_failures": 0,
+      "ws_dead_clients": 0
+    }
+  },
+  "timestamp": "2026-06-16T10:30:00+00:00"
+}
+```
+
+**Status values:** `ok` — component healthy; `degraded` — component partially functional; `unavailable` — component not reachable.
+
+**Backward compatibility:** The existing `GET /api/v1/health` endpoint is unchanged.
 
 ### `GET /api/v1/sessions`
 
