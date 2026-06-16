@@ -93,6 +93,16 @@ model_stats = get_model_stats(session_id)
 
 When switching models mid-session, per-model stats prevent cross-model pollution. Each model's `avg_tps` and `peak_tps` are tracked independently. Model data is automatically included in `_tps_snapshot["models"]` for status bar integration.
 
+### Session Lifecycle
+
+The plugin automatically manages session state to prevent unbounded memory growth:
+
+- **Event-driven cleanup:** When a session ends (via the `on_session_end` hook), all in-memory state for that session is removed immediately.
+- **LRU eviction:** As a safety net for sessions that don't trigger `on_session_end` (e.g., process killed), the plugin evicts the least-recently-active session when the total exceeds `MAX_SESSIONS` (default: 50). Eviction targets the session with the oldest `turn_start_time`.
+- **Session duration:** `get_tps_stats` returns a `session_duration` field (seconds since session creation) alongside existing metrics.
+
+Both cleanup paths are fully thread-safe via the existing `_STATE_LOCK`.
+
 ## No Configuration Required
 
 Works out of the box. No env vars or config needed.

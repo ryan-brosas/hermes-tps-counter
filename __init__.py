@@ -73,6 +73,9 @@ _SESSIONS: Dict[str, "_SessionTPS"] = {}
 _MODELS: Dict[str, Dict[str, "_ModelTPS"]] = {}  # session_id → model_name → _ModelTPS
 _PROVIDERS: Dict[str, Dict[str, "_ProviderTPS"]] = {}  # session_id → provider → _ProviderTPS
 
+# Session lifecycle limits
+MAX_SESSIONS = 50  # LRU eviction threshold
+
 # Persistent store (set during register, may remain None on failure)
 _STORE: Optional[Any] = None  # PersistentSessionStore | None
 
@@ -93,6 +96,7 @@ class _SessionTPS:
         "turn_start_tokens",
         "turn_start_input_tokens",
         "turn_start_time",
+        "created_at",
     )
 
     def __init__(self) -> None:
@@ -108,6 +112,7 @@ class _SessionTPS:
         self.turn_start_tokens: int = 0
         self.turn_start_input_tokens: int = 0
         self.turn_start_time: float = time.time()
+        self.created_at: float = time.time()
 
     def record(self, output_tokens: int, duration: float, input_tokens: int = 0) -> None:
         self.call_count += 1
@@ -340,6 +345,9 @@ def _on_post_api_request(**kwargs: Any) -> None:
         provider_state = _get_provider(session_id, provider)
         provider_state.record(output_tokens, duration)
 
+    # LRU eviction safety net
+    _evict_if_needed()
+
     # Expose TPS snapshot for status bar integration
     try:
         from hermes_cli import _ACTIVE_CLI_INSTANCE
@@ -430,6 +438,15 @@ def _stop_api_server() -> None:
         _API_SERVER = None
 
 
+def _on_session_end(**kwargs: Any) -> None:
+    """Hook callback: clean up session state when a session ends."""
+    session_id = kwargs.get("session_id", "")
+    if not session_id:
+        logger.debug("tps-counter: on_session_end called without session_id")
+        return
+    _cleanup_session(session_id)
+
+
 def register(ctx: Any) -> None:
     """Plugin entry point — called by Hermes plugin loader."""
     global _STORE
@@ -458,6 +475,7 @@ def register(ctx: Any) -> None:
         _STORE = None
 
     ctx.register_hook("post_api_request", _on_post_api_request)
+    ctx.register_hook("on_session_end", _on_session_end)
     logger.info("tps-counter plugin registered")
 
     # Optionally start the REST API server
@@ -484,6 +502,7 @@ def get_tps_stats(session_id: str) -> Dict[str, Any]:
         "total_input_tokens": state.total_input_tokens,
         "total_tokens": state.total_tokens,
         "total_duration": round(state.total_duration, 2),
+        "session_duration": round(time.time() - state.created_at, 2),
     }
 
 
@@ -533,3 +552,21 @@ def _cleanup_session(session_id: str) -> None:
         _SESSIONS.pop(session_id, None)
         _MODELS.pop(session_id, None)
         _PROVIDERS.pop(session_id, None)
+    logger.debug("tps-counter: cleaned up session %s", session_id[:8])
+
+
+def _evict_if_needed() -> None:
+    """Evict the session with the oldest turn_start_time if over MAX_SESSIONS."""
+    with _STATE_LOCK:
+        if len(_SESSIONS) <= MAX_SESSIONS:
+            return
+        # Find session with oldest turn_start_time (least recently active)
+        oldest_id = min(_SESSIONS, key=lambda sid: _SESSIONS[sid].turn_start_time)
+        _SESSIONS.pop(oldest_id, None)
+        _MODELS.pop(oldest_id, None)
+        _PROVIDERS.pop(oldest_id, None)
+        logger.debug(
+            "tps-counter: LRU evicted session %s (over %d limit)",
+            oldest_id[:8],
+            MAX_SESSIONS,
+        )
