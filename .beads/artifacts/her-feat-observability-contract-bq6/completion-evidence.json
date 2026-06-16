@@ -1,0 +1,86 @@
+{
+  "bead_id": "her-feat-observability-contract-bq6",
+  "status": "pass",
+  "summary": "Added dependency-free get_observability_contract() helper, focused tests, and README consumer guidance. Optional REST/WebSocket/Prometheus surfaces are explicitly unavailable on this branch because their modules are absent.",
+  "verification_commands": [
+    {
+      "command": "pytest tests/test_api.py tests/test_hook.py tests/test_session_tps.py tests/test_thread_safety.py",
+      "status": "pass",
+      "evidence": "54 passed in 0.15s"
+    },
+    {
+      "command": "python3 smoke check importing get_observability_contract, json.dumps(contract), and asserting top-level sections",
+      "status": "pass",
+      "evidence": "contract smoke ok"
+    },
+    {
+      "command": "br lint her-feat-observability-contract-bq6 --json",
+      "status": "pass",
+      "evidence": "{\"total\":0,\"issues\":0,\"results\":[]}"
+    },
+    {
+      "command": "br dep cycles --blocking-only --json",
+      "status": "pass",
+      "evidence": "{\"cycles\":[],\"count\":0,\"active_count\":0,\"archived_closed_count\":0,\"total_count\":0,\"blocking_only\":true,\"include_closed\":false,\"scope\":\"active\"}"
+    },
+    {
+      "command": "br sync --flush-only",
+      "status": "pass",
+      "evidence": "Nothing to export (no dirty issues)"
+    }
+  ],
+  "requirements_met": [
+    {
+      "requirement": "Expose a stable machine-readable observability contract",
+      "status": "pass",
+      "evidence": "get_observability_contract() returns JSON-compatible metadata with contract_version and plugin metadata. No REST route exists because no API layer is present on this branch."
+    },
+    {
+      "requirement": "Define TPS status snapshot schema",
+      "status": "pass",
+      "evidence": "Contract status_snapshot.fields documents last_tps, avg_tps, peak_tps, output_tokens, updated_at, updated_monotonic, and session_id with types, units, sources, and freshness/session semantics."
+    },
+    {
+      "requirement": "Define API/WebSocket payload metadata",
+      "status": "pass",
+      "evidence": "Contract api.surfaces.get_tps_stats documents current helper fields and missing-session behavior; websocket section is present with available=false because no WebSocket module exists."
+    },
+    {
+      "requirement": "Define Prometheus metric metadata",
+      "status": "pass",
+      "evidence": "Contract prometheus section is present with available=false because no prometheus_metrics.py exists, and includes label-cardinality guidance."
+    },
+    {
+      "requirement": "Preserve backward compatibility",
+      "status": "pass",
+      "evidence": "Existing hook, status snapshot, public API, session, and thread-safety tests passed unchanged; implementation is additive."
+    },
+    {
+      "requirement": "Keep runtime overhead low",
+      "status": "pass",
+      "evidence": "Helper returns static dict metadata without session iteration, SQLite, network, timers, background work, or optional imports; test asserts no _SESSIONS mutation."
+    },
+    {
+      "requirement": "Document consumer guidance",
+      "status": "pass",
+      "evidence": "README Observability Contract section documents helper usage, helper-only availability, versioning, unknown-field tolerance, freshness/session mismatch handling, and cardinality guidance."
+    },
+    {
+      "requirement": "Add focused coverage",
+      "status": "pass",
+      "evidence": "tests/test_api.py adds contract JSON, metadata, snapshot field, API metadata, absent optional-surface, and no-state-mutation tests."
+    }
+  ],
+  "blast_radius_covered": {
+    "status": "pass",
+    "files_changed": [
+      "__init__.py",
+      "README.md",
+      "tests/test_api.py",
+      ".beads/artifacts/her-feat-observability-contract-bq6/solve-ledger.md",
+      ".beads/artifacts/her-feat-observability-contract-bq6/progress.txt",
+      ".beads/artifacts/her-feat-observability-contract-bq6/completion-evidence.json"
+    ],
+    "notes": "Implementation stayed within bead file ownership; no API/WebSocket/Prometheus files existed to edit."
+  }
+}

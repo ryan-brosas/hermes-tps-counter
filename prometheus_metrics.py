@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # Optional dependency — graceful degradation when prometheus_client absent
 # ---------------------------------------------------------------------------
 try:
-    from prometheus_client import CollectorRegistry, Gauge, Counter, generate_latest
+    from prometheus_client import CollectorRegistry, Gauge, Counter, Histogram, generate_latest
     _PROMETHEUS_AVAILABLE = True
 except ImportError:
     _PROMETHEUS_AVAILABLE = False
@@ -90,9 +90,33 @@ _db_write_errors: Any = None
 _db_read_errors: Any = None
 _ws_broadcast_failures: Any = None
 _ws_dead_clients: Any = None
+_rate_limited_total: Any = None
 
 # Operational health gauges
 _ws_active_connections: Any = None
+
+# Distribution histograms
+_tps_distribution: Any = None
+_api_call_latency_seconds: Any = None
+
+# Keep histogram model label cardinality bounded. Observations for labels beyond
+# the cap are discarded silently rather than creating unbounded time series.
+_label_cardinality_cap = 50
+_admitted_labels: dict[str, set[str]] = {"model": set()}
+
+TPS_DISTRIBUTION_BUCKETS = (1, 5, 10, 25, 50, 100, 250, 500, 1000)
+API_CALL_LATENCY_BUCKETS = (0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60)
+
+
+def _admit_label(label_name: str, value: str) -> bool:
+    """Return True if a label value is within the configured cardinality cap."""
+    admitted = _admitted_labels.setdefault(label_name, set())
+    if value in admitted:
+        return True
+    if len(admitted) >= _label_cardinality_cap:
+        return False
+    admitted.add(value)
+    return True
 
 
 def configure(
@@ -127,8 +151,11 @@ def _init_metrics() -> None:
     global _tps_model_avg, _tps_model_peak
     global _tps_provider_avg, _tps_provider_peak
     global _usage_extraction_failures, _db_write_errors, _db_read_errors
-    global _ws_broadcast_failures, _ws_dead_clients
+    global _ws_broadcast_failures, _ws_dead_clients, _rate_limited_total
     global _ws_active_connections
+    global _tps_distribution, _api_call_latency_seconds
+
+    _admitted_labels["model"] = set()
 
     # Reset bounded label tracking
     _seen_models.clear()
@@ -325,11 +352,32 @@ def _init_metrics() -> None:
         "Total dead WebSocket clients removed after send failure",
         registry=REGISTRY,
     )
+    _rate_limited_total = Counter(
+        "tps_api_rate_limited_total",
+        "Total requests rejected by API rate limiting",
+        registry=REGISTRY,
+    )
 
     # Operational health gauges
     _ws_active_connections = Gauge(
         "ws_active_connections",
         "Number of currently active WebSocket connections",
+        registry=REGISTRY,
+    )
+
+    # Distribution histograms
+    _tps_distribution = Histogram(
+        "tps_distribution",
+        "Distribution of tokens-per-second throughput per API call",
+        ["model"],
+        buckets=TPS_DISTRIBUTION_BUCKETS,
+        registry=REGISTRY,
+    )
+    _api_call_latency_seconds = Histogram(
+        "api_call_latency_seconds",
+        "Distribution of LLM API call latency in seconds",
+        ["model"],
+        buckets=API_CALL_LATENCY_BUCKETS,
         registry=REGISTRY,
     )
 
@@ -495,6 +543,40 @@ def metrics_available() -> bool:
     return _PROMETHEUS_AVAILABLE and REGISTRY is not None
 
 
+def observe_tps(value: float, model: str) -> None:
+    """Record one TPS observation for percentile analysis.
+
+    Uses a bounded ``model`` label. If the model cardinality cap has already
+    been reached, the observation is dropped silently to protect Prometheus.
+    """
+    if not _PROMETHEUS_AVAILABLE or _tps_distribution is None:
+        return
+    model_label = model or "unknown"
+    if not _admit_label("model", model_label):
+        return
+    try:
+        _tps_distribution.labels(model=model_label).observe(float(value))
+    except Exception as exc:
+        logger.debug("prometheus_metrics: TPS histogram observe failed: %s", exc)
+
+
+def observe_latency(seconds: float, model: str) -> None:
+    """Record one API latency observation for percentile analysis.
+
+    Uses a bounded ``model`` label. If the model cardinality cap has already
+    been reached, the observation is dropped silently to protect Prometheus.
+    """
+    if not _PROMETHEUS_AVAILABLE or _api_call_latency_seconds is None:
+        return
+    model_label = model or "unknown"
+    if not _admit_label("model", model_label):
+        return
+    try:
+        _api_call_latency_seconds.labels(model=model_label).observe(float(seconds))
+    except Exception as exc:
+        logger.debug("prometheus_metrics: latency histogram observe failed: %s", exc)
+
+
 # ---------------------------------------------------------------------------
 # Health metric increment functions (event-driven, not state-synced)
 # ---------------------------------------------------------------------------
@@ -548,6 +630,13 @@ def increment_ws_dead_client() -> None:
     if not _PROMETHEUS_AVAILABLE or _ws_dead_clients is None:
         return
     _ws_dead_clients.inc()
+
+
+def increment_rate_limited() -> None:
+    """Increment the API rate-limited requests counter."""
+    if not _PROMETHEUS_AVAILABLE or _rate_limited_total is None:
+        return
+    _rate_limited_total.inc()
 
 
 def set_ws_active_connections(count: int) -> None:

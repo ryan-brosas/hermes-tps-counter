@@ -39,8 +39,8 @@ _ENV_FIELD_MAP: Dict[str, str] = {
     "API_PORT": "api_port",
     "PROMETHEUS_ENABLED": "prometheus_enabled",
     "API_ENABLED": "api_enabled",
-    "PROMETHEUS_LEGACY_SESSION_LABELS": "prometheus_legacy_session_labels",
-    "PROMETHEUS_LABEL_CARDINALITY_CAP": "prometheus_label_cardinality_cap",
+    "REQUESTS_PER_MINUTE": "requests_per_minute",
+    "BURST_SIZE": "burst_size",
 }
 
 
@@ -72,11 +72,11 @@ class TPSConfig:
     api_enabled: bool = False
     """Whether the REST API server is enabled."""
 
-    prometheus_legacy_session_labels: bool = False
-    """Whether to emit per-session_id Prometheus labels (unbounded cardinality)."""
+    requests_per_minute: int = 60
+    """Allowed sustained REST API requests per client IP per minute."""
 
-    prometheus_label_cardinality_cap: int = 50
-    """Maximum distinct model/provider label values before routing to _overflow aggregate."""
+    burst_size: int = 10
+    """Additional burst allowance per client IP above the sustained rate."""
 
 
 def _coerce_value(field_name: str, raw: str, expected_type: type) -> Any:
@@ -143,6 +143,12 @@ def _load_from_toml(path: Optional[Path] = None) -> Dict[str, Any]:
             result.setdefault("api_port", api_section["port"])
         if "enabled" in api_section:
             result.setdefault("api_enabled", api_section["enabled"])
+        rate_limit_section = api_section.get("rate_limit", {})
+        if isinstance(rate_limit_section, dict):
+            if "requests_per_minute" in rate_limit_section:
+                result.setdefault("requests_per_minute", rate_limit_section["requests_per_minute"])
+            if "burst_size" in rate_limit_section:
+                result.setdefault("burst_size", rate_limit_section["burst_size"])
 
     # Nested [prometheus] section
     prom_section = data.get("prometheus", {})
@@ -213,6 +219,8 @@ def _load_from_ctx(ctx: Any) -> Dict[str, Any]:
         "db_path": "db_path",
         "max_sessions": "max_sessions",
         "retention_days": "retention_days",
+        "requests_per_minute": "requests_per_minute",
+        "burst_size": "burst_size",
     }
     for ctx_key, field_name in direct_keys.items():
         if ctx_key in raw:
@@ -227,6 +235,12 @@ def _load_from_ctx(ctx: Any) -> Dict[str, Any]:
             result["api_port"] = api_section["port"]
         if "enabled" in api_section:
             result["api_enabled"] = api_section["enabled"]
+        rate_limit_section = api_section.get("rate_limit", {})
+        if isinstance(rate_limit_section, dict):
+            if "requests_per_minute" in rate_limit_section:
+                result["requests_per_minute"] = rate_limit_section["requests_per_minute"]
+            if "burst_size" in rate_limit_section:
+                result["burst_size"] = rate_limit_section["burst_size"]
 
     # Nested prometheus section
     prom_section = raw.get("prometheus", {})
@@ -252,6 +266,15 @@ def _validate(config: TPSConfig) -> None:
     if config.api_port < 1 or config.api_port > 65535:
         logger.warning("tps-counter config: api_port=%d is out of range 1-65535, using default 9127", config.api_port)
         config.api_port = 9127
+    if config.requests_per_minute < 1:
+        logger.warning(
+            "tps-counter config: requests_per_minute=%d is < 1, clamping to 1",
+            config.requests_per_minute,
+        )
+        config.requests_per_minute = 1
+    if config.burst_size < 1:
+        logger.warning("tps-counter config: burst_size=%d is < 1, clamping to 1", config.burst_size)
+        config.burst_size = 1
 
 
 def get_config(ctx: Any = None, *, config_path: Optional[Path] = None) -> TPSConfig:

@@ -1,0 +1,51 @@
+{
+  "bead_id": "her-feat-api-rate-limiting-1p8",
+  "status": "PASS",
+  "verified_at": "2026-06-17T00:56:12+08:00",
+  "commands": [
+    {
+      "command": "br lint her-feat-api-rate-limiting-1p8 --json",
+      "result": "PASS: {\"total\":0,\"issues\":0,\"results\":[]}"
+    },
+    {
+      "command": "python -m pytest tests/test_api.py tests/test_config.py tests/test_rate_limiting.py tests/test_prometheus.py -x -q",
+      "result": "PASS: 119 passed in 8.12s"
+    },
+    {
+      "command": "git diff --check",
+      "result": "PASS: no whitespace errors"
+    }
+  ],
+  "requirements_met": [
+    {
+      "requirement": "Burst requests from one IP to protected REST endpoints receive HTTP 429 with Retry-After before handler/store work.",
+      "status": "PASS",
+      "evidence": "tests/test_rate_limiting.py covers throttled 429 responses and verifies MagicMock store.load_all is not called after the client exceeds the limit."
+    },
+    {
+      "requirement": "Under-limit requests preserve existing response contracts.",
+      "status": "PASS",
+      "evidence": "tests/test_api.py and tests/test_rate_limiting.py passed; under-limit sessions/summary responses retain existing JSON shapes."
+    },
+    {
+      "requirement": "TPSConfig supports requests_per_minute and burst_size via defaults, TOML, env, and context with validation.",
+      "status": "PASS",
+      "evidence": "tests/test_config.py passed with added defaults, env, flat TOML, nested api.rate_limit TOML, context, and validation tests."
+    },
+    {
+      "requirement": "/api/v1/health remains exempt from throttling.",
+      "status": "PASS",
+      "evidence": "tests/test_rate_limiting.py::test_health_endpoint_is_exempt_when_client_is_over_limit passed."
+    },
+    {
+      "requirement": "Prometheus exposes tps_api_rate_limited_total after throttled requests when available.",
+      "status": "PASS",
+      "evidence": "tests/test_rate_limiting.py::test_prometheus_rate_limited_counter_exposed passed."
+    },
+    {
+      "requirement": "No external dependencies introduced and affected tests pass.",
+      "status": "PASS",
+      "evidence": "Implementation uses stdlib deque/time/threading plus existing FastAPI/Starlette; full affected test command passed 119 tests."
+    }
+  ]
+}

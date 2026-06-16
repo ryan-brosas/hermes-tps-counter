@@ -60,6 +60,11 @@ class TestTPSConfigDefaults:
         cfg = get_config()
         assert cfg.api_enabled is False
 
+    def test_rate_limit_defaults(self):
+        cfg = get_config()
+        assert cfg.requests_per_minute == 60
+        assert cfg.burst_size == 10
+
 
 class TestEnvVarOverrides:
     """Test environment variable overrides via TPS_COUNTER_* prefix."""
@@ -118,6 +123,13 @@ class TestEnvVarOverrides:
         assert cfg.api_port == 3000
         assert cfg.retention_days == 30
 
+    def test_rate_limit_env_overrides(self, monkeypatch):
+        monkeypatch.setenv("TPS_COUNTER_REQUESTS_PER_MINUTE", "120")
+        monkeypatch.setenv("TPS_COUNTER_BURST_SIZE", "25")
+        cfg = get_config()
+        assert cfg.requests_per_minute == 120
+        assert cfg.burst_size == 25
+
 
 class TestTOMLConfig:
     """Test TOML config file loading."""
@@ -145,6 +157,22 @@ class TestTOMLConfig:
         config_file.write_text(toml_content)
         cfg = get_config(config_path=config_file)
         assert cfg.prometheus_enabled is True
+
+    def test_toml_flat_rate_limit_fields(self, config_dir):
+        toml_content = 'requests_per_minute = 90\nburst_size = 15\n'
+        config_file = config_dir / "config.toml"
+        config_file.write_text(toml_content)
+        cfg = get_config(config_path=config_file)
+        assert cfg.requests_per_minute == 90
+        assert cfg.burst_size == 15
+
+    def test_toml_api_rate_limit_section(self, config_dir):
+        toml_content = '[api.rate_limit]\nrequests_per_minute = 75\nburst_size = 8\n'
+        config_file = config_dir / "config.toml"
+        config_file.write_text(toml_content)
+        cfg = get_config(config_path=config_file)
+        assert cfg.requests_per_minute == 75
+        assert cfg.burst_size == 8
 
     def test_toml_file_missing_no_error(self, config_dir):
         missing_path = config_dir / "nonexistent.toml"
@@ -193,6 +221,20 @@ class TestCtxOverrides:
         cfg = get_config(ctx=ctx)
         assert cfg.db_path == "/custom/path.db"
         assert cfg.api_port == 4000
+
+    def test_ctx_direct_rate_limit_fields(self):
+        ctx = MagicMock()
+        ctx.get_config.return_value = {"requests_per_minute": 33, "burst_size": 4}
+        cfg = get_config(ctx=ctx)
+        assert cfg.requests_per_minute == 33
+        assert cfg.burst_size == 4
+
+    def test_ctx_nested_api_rate_limit_fields(self):
+        ctx = MagicMock()
+        ctx.get_config.return_value = {"api": {"rate_limit": {"requests_per_minute": 44, "burst_size": 5}}}
+        cfg = get_config(ctx=ctx)
+        assert cfg.requests_per_minute == 44
+        assert cfg.burst_size == 5
 
     def test_ctx_with_prometheus(self):
         ctx = MagicMock()
@@ -253,6 +295,13 @@ class TestValidation:
         monkeypatch.setenv("TPS_COUNTER_API_PORT", "99999")
         cfg = get_config()
         assert cfg.api_port == 9127  # reset to default
+
+    def test_rate_limit_values_clamped_to_minimum(self, monkeypatch):
+        monkeypatch.setenv("TPS_COUNTER_REQUESTS_PER_MINUTE", "0")
+        monkeypatch.setenv("TPS_COUNTER_BURST_SIZE", "-3")
+        cfg = get_config()
+        assert cfg.requests_per_minute == 1
+        assert cfg.burst_size == 1
 
 
 class TestAutoCreateDir:

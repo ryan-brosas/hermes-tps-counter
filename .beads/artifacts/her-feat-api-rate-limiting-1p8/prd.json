@@ -1,0 +1,70 @@
+{
+  "bead_id": "her-feat-api-rate-limiting-1p8",
+  "type": "feature",
+  "priority": 2,
+  "estimate_minutes": 75,
+  "requirements": [
+    {
+      "id": 1,
+      "text": "Apply per-IP rate limiting before REST endpoint handlers perform SQLite-backed work.",
+      "priority": "MUST",
+      "acceptance": "Repeated requests from one client beyond the configured allowance receive HTTP 429 without invoking the protected handler/store path."
+    },
+    {
+      "id": 2,
+      "text": "Preserve existing behavior for requests under the limit.",
+      "priority": "MUST",
+      "acceptance": "Existing API tests continue to pass except where new tests explicitly exercise throttling."
+    },
+    {
+      "id": 3,
+      "text": "Return standards-friendly throttle responses.",
+      "priority": "MUST",
+      "acceptance": "A throttled request returns HTTP 429, includes Retry-After, and returns a JSON body with a clear rate-limit detail."
+    },
+    {
+      "id": 4,
+      "text": "Make rate limits configurable via TPSConfig.",
+      "priority": "MUST",
+      "acceptance": "requests_per_minute and burst_size defaults are present, load from TOML, environment, and Hermes context config, and validate invalid values."
+    },
+    {
+      "id": 5,
+      "text": "Avoid external dependencies.",
+      "priority": "MUST",
+      "acceptance": "Implementation uses stdlib data structures plus existing FastAPI/Starlette middleware hooks; no Redis, slowapi, or new package dependency is added."
+    },
+    {
+      "id": 6,
+      "text": "Exempt the health endpoint from rate limiting.",
+      "priority": "SHOULD",
+      "acceptance": "/api/v1/health continues returning liveness information even when the same client is otherwise over limit."
+    },
+    {
+      "id": 7,
+      "text": "Prevent unbounded per-IP state growth.",
+      "priority": "MUST",
+      "acceptance": "Stale client entries are pruned after their request windows expire, with tests covering cleanup."
+    },
+    {
+      "id": 8,
+      "text": "Expose Prometheus visibility for throttling.",
+      "priority": "MUST",
+      "acceptance": "prometheus_metrics.py exposes tps_api_rate_limited_total and a helper that increments on throttled requests when Prometheus is available."
+    },
+    {
+      "id": 9,
+      "text": "Log rate-limit events at DEBUG level.",
+      "priority": "SHOULD",
+      "acceptance": "Throttled requests are logged at DEBUG with client identity and retry timing, without logging request bodies or secrets."
+    }
+  ],
+  "success_criteria": [
+    "Burst requests from one IP to protected REST endpoints eventually receive HTTP 429 before hitting SQLite-backed handler logic.",
+    "Throttled responses include Retry-After and clear JSON detail, while under-limit requests preserve existing response contracts.",
+    "TPSConfig supports requests_per_minute and burst_size from defaults, TOML, environment, and context override paths with validation.",
+    "/api/v1/health remains exempt from throttling.",
+    "Prometheus exposes tps_api_rate_limited_total when rate-limited requests occur and Prometheus is available.",
+    "Affected API, config, rate-limiting, and Prometheus tests pass without adding external dependencies."
+  ]
+}

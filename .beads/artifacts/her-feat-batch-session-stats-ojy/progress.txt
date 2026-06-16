@@ -1,0 +1,8 @@
+COMPLETED 2026-06-17
+
+Implemented POST /api/v1/sessions/batch/tps with Pydantic request/response models, first-seen deduplication, partial-miss reporting, and database-unavailable 503 handling.
+
+Verification:
+- pytest tests/test_api.py -v -k batch => 7 passed
+- pytest tests/test_api.py -v => 35 passed
+- README contains /api/v1/sessions/batch/tps endpoint documentation and examples

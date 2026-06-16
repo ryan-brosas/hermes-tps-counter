@@ -1,0 +1,57 @@
+{
+  "bead_id": "her-chore-docs-quickstart-sj2",
+  "type": "chore",
+  "priority": 3,
+  "estimate_minutes": 45,
+  "requirements": [
+    {
+      "id": 1,
+      "text": "Provide a concise README quickstart",
+      "priority": "MUST",
+      "acceptance": "README has a clear copy/install/restart/verify flow for installing the plugin into a Hermes plugins directory without implying new tooling."
+    },
+    {
+      "id": 2,
+      "text": "Document status-bar integration accurately",
+      "priority": "MUST",
+      "acceptance": "README identifies agent._tps_snapshot, the active CLI instance hook expectation, snapshot fields, and recommended status-bar display behavior."
+    },
+    {
+      "id": 3,
+      "text": "Explain stale and cross-session suppression rules",
+      "priority": "MUST",
+      "acceptance": "README instructs consumers to calculate age with time.monotonic() - snapshot[\"updated_monotonic\"] and to suppress or clear values when stale or session-mismatched."
+    },
+    {
+      "id": 4,
+      "text": "Summarize observability surfaces and availability",
+      "priority": "MUST",
+      "acceptance": "README describes get_tps_stats(session_id), get_observability_contract(), privacy diagnostics/redaction behavior, and explicitly says REST/WebSocket/Prometheus surfaces are unavailable when the contract marks them unavailable."
+    },
+    {
+      "id": 5,
+      "text": "Add practical troubleshooting guidance",
+      "priority": "MUST",
+      "acceptance": "README includes symptoms, likely causes, and checks for no TPS, stale TPS, privacy-redacted identifiers, zero stats, missing optional surfaces, and plugin registration failures."
+    },
+    {
+      "id": 6,
+      "text": "Preserve documentation/code consistency",
+      "priority": "SHOULD",
+      "acceptance": "README examples use field names and env vars present in __init__.py and plugin metadata from plugin.yaml; no docs claim unsupported routes or exporters exist."
+    },
+    {
+      "id": 7,
+      "text": "Keep the change documentation-only",
+      "priority": "SHOULD",
+      "acceptance": "Final diff changes only documentation files for this bead's implementation phase unless later planning explicitly authorizes otherwise."
+    }
+  ],
+  "success_criteria": [
+    "README contains a quickstart that lets a Hermes user install, restart, and verify the plugin's basic TPS behavior.",
+    "README documents status-bar integration with freshness and session-mismatch rules.",
+    "README summarizes current observability surfaces without claiming absent endpoints exist.",
+    "README includes a troubleshooting guide for common installation, display, stale data, privacy, and observability-surface issues.",
+    "The eventual implementation remains documentation-only."
+  ]
+}

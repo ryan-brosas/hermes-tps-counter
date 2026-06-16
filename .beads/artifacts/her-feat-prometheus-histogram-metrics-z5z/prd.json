@@ -1,0 +1,74 @@
+{
+  "bead_id": "her-feat-prometheus-histogram-metrics-z5z",
+  "type": "feature",
+  "priority": 2,
+  "title": "Add Prometheus Histogram metrics for TPS and API latency distribution tracking (p50/p95/p99)",
+  "estimated_minutes": 90,
+  "requirements": [
+    {
+      "id": 1,
+      "description": "Add Histogram tps_distribution with buckets [1, 5, 10, 25, 50, 100, 250, 500, 1000] and label model",
+      "priority": "MUST",
+      "acceptance": "Metric registered in REGISTRY, appears in /metrics output"
+    },
+    {
+      "id": 2,
+      "description": "Add Histogram api_call_latency_seconds with buckets [0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60] and label model",
+      "priority": "MUST",
+      "acceptance": "Metric registered in REGISTRY, appears in /metrics output"
+    },
+    {
+      "id": 3,
+      "description": "Both histograms use existing custom REGISTRY",
+      "priority": "MUST",
+      "acceptance": "REGISTRY.get_sample_value() returns histogram data"
+    },
+    {
+      "id": 4,
+      "description": "Record observations from _on_post_api_request in __init__.py",
+      "priority": "MUST",
+      "acceptance": "After hook call, histogram buckets are non-zero"
+    },
+    {
+      "id": 5,
+      "description": "Graceful degradation when prometheus_client absent",
+      "priority": "MUST",
+      "acceptance": "No import errors, no runtime errors when prometheus_client not installed"
+    },
+    {
+      "id": 6,
+      "description": "Helper functions observe_tps(value, model) and observe_latency(seconds, model)",
+      "priority": "SHOULD",
+      "acceptance": "Functions exist in prometheus_metrics.py, callable from __init__.py"
+    },
+    {
+      "id": 7,
+      "description": "Include HELP and TYPE metadata",
+      "priority": "SHOULD",
+      "acceptance": "/metrics output includes # HELP and # TYPE lines for both histograms"
+    },
+    {
+      "id": 8,
+      "description": "Backward compatible with existing tests",
+      "priority": "MUST",
+      "acceptance": "All existing tests pass without modification"
+    },
+    {
+      "id": 9,
+      "description": "Tests for histogram registration, observation, and output",
+      "priority": "MUST",
+      "acceptance": "Tests cover: metric creation, observation recording, /metrics output format"
+    }
+  ],
+  "success_criteria": [
+    "tps_distribution histogram in /metrics output with correct buckets",
+    "api_call_latency_seconds histogram in /metrics output with correct buckets",
+    "Observations recorded correctly after API hook calls",
+    "Model label bounded by cardinality cap",
+    "All existing tests pass (240+)",
+    "New histogram tests pass",
+    "No regressions when prometheus_client absent"
+  ],
+  "files_allowed": ["prometheus_metrics.py", "__init__.py", "tests/test_prometheus.py", "README.md"],
+  "files_forbidden": [".pi/", ".beads/beads.db", "HERMES.md", "store.py", "config.py", "api.py"]
+}
