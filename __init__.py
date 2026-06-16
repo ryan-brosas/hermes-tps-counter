@@ -90,6 +90,7 @@ class _SessionTPS:
         "last_call_duration",
         "peak_tps",
         "turn_start_tokens",
+        "turn_start_input_tokens",
         "turn_start_time",
     )
 
@@ -104,6 +105,7 @@ class _SessionTPS:
         self.last_call_duration: float = 0.0
         self.peak_tps: float = 0.0
         self.turn_start_tokens: int = 0
+        self.turn_start_input_tokens: int = 0
         self.turn_start_time: float = time.time()
 
     def record(self, output_tokens: int, duration: float, input_tokens: int = 0) -> None:
@@ -118,6 +120,11 @@ class _SessionTPS:
             self.last_call_tps = output_tokens / duration
             if self.last_call_tps > self.peak_tps:
                 self.peak_tps = self.last_call_tps
+
+    @property
+    def total_tokens(self) -> int:
+        """Total tokens processed (input + output)."""
+        return self.total_input_tokens + self.total_output_tokens
 
     @property
     def avg_tps(self) -> float:
@@ -136,6 +143,7 @@ class _SessionTPS:
 
     def reset_turn(self) -> None:
         self.turn_start_tokens = self.total_output_tokens
+        self.turn_start_input_tokens = self.total_input_tokens
         self.turn_start_time = time.time()
 
     def summary_line(self) -> str:
@@ -147,6 +155,8 @@ class _SessionTPS:
             parts.append(f"avg {self.avg_tps:.1f}")
         if self.peak_tps > 0:
             parts.append(f"peak {self.peak_tps:.1f}")
+        if self.total_tokens > 0:
+            parts.append(f"total {self._fmt_tokens(self.total_tokens)}")
         if self.total_output_tokens > 0:
             parts.append(f"out {self._fmt_tokens(self.total_output_tokens)}")
         if self.total_input_tokens > 0:
@@ -283,6 +293,7 @@ def _on_post_api_request(**kwargs: Any) -> None:
                     "peak_tps": state.peak_tps,
                     "output_tokens": state.total_output_tokens,
                     "input_tokens": state.total_input_tokens,
+                    "total_tokens": state.total_tokens,
                 }
                 # Include per-model breakdown if available
                 with _STATE_LOCK:
@@ -348,7 +359,7 @@ def get_tps_stats(session_id: str) -> Dict[str, Any]:
     with _STATE_LOCK:
         state = _SESSIONS.get(session_id)
     if state is None:
-        return {"calls": 0, "avg_tps": 0, "last_tps": 0, "peak_tps": 0, "total_output_tokens": 0}
+        return {"calls": 0, "avg_tps": 0, "last_tps": 0, "peak_tps": 0, "total_output_tokens": 0, "total_input_tokens": 0, "total_tokens": 0}
     return {
         "calls": state.call_count,
         "avg_tps": round(state.avg_tps, 1),
@@ -356,6 +367,7 @@ def get_tps_stats(session_id: str) -> Dict[str, Any]:
         "peak_tps": round(state.peak_tps, 1),
         "total_output_tokens": state.total_output_tokens,
         "total_input_tokens": state.total_input_tokens,
+        "total_tokens": state.total_tokens,
         "total_duration": round(state.total_duration, 2),
     }
 
