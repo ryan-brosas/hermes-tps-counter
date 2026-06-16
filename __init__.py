@@ -70,6 +70,11 @@ def _extract_usage(usage_dict: Any) -> tuple[int, int]:
 # Per-session TPS state, keyed by session_id
 _STATE_LOCK = threading.Lock()
 _SESSIONS: Dict[str, "_SessionTPS"] = {}
+_MODELS: Dict[str, Dict[str, "_ModelTPS"]] = {}  # session_id → model_name → _ModelTPS
+_PROVIDERS: Dict[str, Dict[str, "_ProviderTPS"]] = {}  # session_id → provider → _ProviderTPS
+
+# Persistent store (set during register, may remain None on failure)
+_STORE: Optional[Any] = None  # PersistentSessionStore | None
 
 # Alert configuration (set during register())
 _ALERT_CONFIG: Dict[str, Any] = {
@@ -195,91 +200,143 @@ class _SessionTPS:
         return str(n)
 
 
+def _extract_provider(model: str) -> str:
+    """Extract provider name from a LiteLLM-style model string.
+
+    Examples:
+        'openai/gpt-4o' → 'openai'
+        'anthropic/claude-sonnet-4' → 'anthropic'
+        'gpt-4' → 'default'
+        '' → 'default'
+    """
+    if not model or "/" not in model:
+        return "default"
+    return model.split("/", 1)[0]
+
+
+class _ProviderTPS:
+    """Tracks aggregate TPS metrics for a provider within a session."""
+
+    __slots__ = (
+        "call_count",
+        "total_output_tokens",
+        "total_duration",
+        "peak_tps",
+    )
+
+    def __init__(self) -> None:
+        self.call_count: int = 0
+        self.total_output_tokens: int = 0
+        self.total_duration: float = 0.0
+        self.peak_tps: float = 0.0
+
+    def record(self, output_tokens: int, duration: float) -> None:
+        self.call_count += 1
+        self.total_output_tokens += output_tokens
+        self.total_duration += duration
+        if duration > 0:
+            tps = output_tokens / duration
+            if tps > self.peak_tps:
+                self.peak_tps = tps
+
+    @property
+    def avg_tps(self) -> float:
+        if self.total_duration > 0:
+            return self.total_output_tokens / self.total_duration
+        return 0.0
+
+
+class _ModelTPS:
+    """Tracks TPS metrics for a single model within a session."""
+
+    __slots__ = (
+        "call_count",
+        "total_output_tokens",
+        "total_duration",
+        "peak_tps",
+    )
+
+    def __init__(self) -> None:
+        self.call_count: int = 0
+        self.total_output_tokens: int = 0
+        self.total_duration: float = 0.0
+        self.peak_tps: float = 0.0
+
+    def record(self, output_tokens: int, duration: float) -> None:
+        self.call_count += 1
+        self.total_output_tokens += output_tokens
+        self.total_duration += duration
+        if duration > 0:
+            tps = output_tokens / duration
+            if tps > self.peak_tps:
+                self.peak_tps = tps
+
+    @property
+    def avg_tps(self) -> float:
+        if self.total_duration > 0:
+            return self.total_output_tokens / self.total_duration
+        return 0.0
+
+
+def _hydrate_from_db(session_id: str) -> Optional[_SessionTPS]:
+    """Try to load a session from the persistent store."""
+    if _STORE is None:
+        return None
+    try:
+        data = _STORE.load(session_id)
+        if data is None:
+            return None
+        s = _SessionTPS()
+        s.call_count = data["call_count"]
+        s.total_output_tokens = data["total_output_tokens"]
+        s.total_input_tokens = data.get("total_input_tokens", 0)
+        s.total_duration = data["total_duration"]
+        s.peak_tps = data["peak_tps"]
+        s.last_call_tps = data["last_call_tps"]
+        s.last_call_output_tokens = 0
+        s.last_call_input_tokens = 0
+        s.last_call_duration = 0.0
+        return s
+    except Exception as exc:
+        logger.warning("tps-counter: DB read failed, disabling store: %s", exc)
+        return None
+
+
+def _persist_state(session_id: str, state: _SessionTPS) -> None:
+    """Write-through to persistent store if available."""
+    if _STORE is None:
+        return
+    try:
+        _STORE.save(session_id, state)
+    except Exception as exc:
+        logger.warning("tps-counter: DB write failed, disabling store: %s", exc)
+
+
 def _get_session(session_id: str) -> _SessionTPS:
     with _STATE_LOCK:
         if session_id not in _SESSIONS:
-            _SESSIONS[session_id] = _SessionTPS()
+            # Try loading from DB first
+            loaded = _hydrate_from_db(session_id)
+            _SESSIONS[session_id] = loaded if loaded is not None else _SessionTPS()
         return _SESSIONS[session_id]
 
 
-def _evaluate_alert(session_id: str, state: _SessionTPS) -> None:
-    """Evaluate TPS threshold alert state for a session.
-
-    Must be called inside _STATE_LOCK. Updates alert_state, alert_threshold,
-    and fires tps_alert hook on state transitions.
-    """
-    cfg = _ALERT_CONFIG
-    current_tps = state.last_call_tps
-
-    # Phase 1: Determine threshold
-    if state.alert_threshold is None:
-        # If user provided a fixed threshold via config, use it immediately
-        if cfg["threshold"] is not None:
-            state.alert_threshold = cfg["threshold"]
-            logger.info(
-                "tps-counter: TPS threshold for session %s = %.1f tok/s (from config)",
-                session_id[:8], state.alert_threshold,
-            )
-        else:
-            # Auto-calculate from cold-start samples
-            cold_start_n = cfg["cold_start_calls"]
-            state.cold_start_samples.append(current_tps)
-            state.recent_tps_samples.append(current_tps)
-            if len(state.cold_start_samples) < cold_start_n:
-                return  # Not enough samples yet
-            # Baseline established — calculate auto-threshold
-            baseline = sum(state.cold_start_samples) / len(state.cold_start_samples)
-            factor = cfg["cold_start_factor"]
-            state.alert_threshold = baseline * factor
-            logger.info(
-                "tps-counter: auto-threshold for session %s = %.1f tok/s "
-                "(baseline %.1f × %.0f%%)",
-                session_id[:8], state.alert_threshold, baseline, factor * 100,
-            )
-
-    # Phase 2: Rolling window evaluation
-    window_size = cfg["eval_window"]
-    state.recent_tps_samples.append(current_tps)
-    # Keep only the last N samples
-    if len(state.recent_tps_samples) > window_size:
-        state.recent_tps_samples = state.recent_tps_samples[-window_size:]
-
-    rolling_avg = sum(state.recent_tps_samples) / len(state.recent_tps_samples)
-    threshold = state.alert_threshold
-    assert threshold is not None  # guaranteed after Phase 1
-
-    # State transitions
-    if rolling_avg < threshold and state.alert_state != "firing":
-        state.alert_state = "firing"
-        state.alert_fired_at = time.time()
-        _emit_alert(session_id, state, rolling_avg, threshold)
-    elif rolling_avg >= threshold and state.alert_state == "firing":
-        state.alert_state = "resolved"
-        state.alert_resolved_at = time.time()
-        _emit_alert(session_id, state, rolling_avg, threshold)
+def _get_model(session_id: str, model: str) -> _ModelTPS:
+    """Get or create a _ModelTPS for a session+model pair. Caller must hold _STATE_LOCK."""
+    if session_id not in _MODELS:
+        _MODELS[session_id] = {}
+    if model not in _MODELS[session_id]:
+        _MODELS[session_id][model] = _ModelTPS()
+    return _MODELS[session_id][model]
 
 
-def _emit_alert(
-    session_id: str,
-    state: _SessionTPS,
-    tps: float,
-    threshold: float,
-) -> None:
-    """Fire the tps_alert hook via the plugin manager."""
-    global _ALERT_HOOK_MANAGER
-    if _ALERT_HOOK_MANAGER is None:
-        return
-    try:
-        _ALERT_HOOK_MANAGER.invoke_hook(
-            "tps_alert",
-            session_id=session_id,
-            state=state.alert_state,
-            tps=round(tps, 1),
-            threshold=round(threshold, 1),
-            timestamp=time.time(),
-        )
-    except Exception as exc:
-        logger.debug("tps-counter: tps_alert hook emission failed: %s", exc)
+def _get_provider(session_id: str, provider: str) -> _ProviderTPS:
+    """Get or create a _ProviderTPS for a session+provider pair. Caller must hold _STATE_LOCK."""
+    if session_id not in _PROVIDERS:
+        _PROVIDERS[session_id] = {}
+    if provider not in _PROVIDERS[session_id]:
+        _PROVIDERS[session_id][provider] = _ProviderTPS()
+    return _PROVIDERS[session_id][provider]
 
 
 def _on_post_api_request(**kwargs: Any) -> None:
@@ -296,11 +353,19 @@ def _on_post_api_request(**kwargs: Any) -> None:
         return
 
     state = _get_session(session_id)
-
-    # Record TPS and evaluate alert under the state lock
+    model = kwargs.get("model", "") or ""
     with _STATE_LOCK:
         state.record(output_tokens, duration, input_tokens)
-        _evaluate_alert(session_id, state)
+        # Write-through to SQLite
+        _persist_state(session_id, state)
+        # Per-model tracking
+        if model:
+            model_state = _get_model(session_id, model)
+            model_state.record(output_tokens, duration)
+        # Per-provider tracking
+        provider = _extract_provider(model)
+        provider_state = _get_provider(session_id, provider)
+        provider_state.record(output_tokens, duration)
 
     # Expose TPS snapshot for status bar integration
     try:
@@ -317,14 +382,32 @@ def _on_post_api_request(**kwargs: Any) -> None:
                     "input_tokens": state.total_input_tokens,
                     "total_tokens": state.total_tokens,
                 }
-                # Alert state for status bar
+                # Include per-model breakdown if available
                 with _STATE_LOCK:
-                    snapshot["alert_state"] = state.alert_state
-                    snapshot["alert_threshold"] = state.alert_threshold
-                    if state.alert_state == "firing":
-                        snapshot["alert_indicator"] = "⚠ TPS ALERT"
-                    else:
-                        snapshot["alert_indicator"] = ""
+                    session_models = _MODELS.get(session_id, {})
+                    if session_models:
+                        snapshot["models"] = {
+                            m: {
+                                "avg_tps": ms.avg_tps,
+                                "peak_tps": ms.peak_tps,
+                                "calls": ms.call_count,
+                                "total_output_tokens": ms.total_output_tokens,
+                            }
+                            for m, ms in session_models.items()
+                        }
+                    # Include per-provider breakdown if available
+                    session_providers = _PROVIDERS.get(session_id, {})
+                    if session_providers:
+                        snapshot["providers"] = {
+                            p: {
+                                "avg_tps": ps.avg_tps,
+                                "peak_tps": ps.peak_tps,
+                                "calls": ps.call_count,
+                                "total_output_tokens": ps.total_output_tokens,
+                                "total_duration": ps.total_duration,
+                            }
+                            for p, ps in session_providers.items()
+                        }
                 agent._tps_snapshot = snapshot
     except Exception as exc:
         logger.debug("tps-counter: failed to inject status bar data: %s", exc)
@@ -341,37 +424,31 @@ def _on_post_api_request(**kwargs: Any) -> None:
 
 def register(ctx: Any) -> None:
     """Plugin entry point — called by Hermes plugin loader."""
-    global _ALERT_HOOK_MANAGER
+    global _STORE
 
-    # Read alert configuration from environment variables
-    env_threshold = os.environ.get("TPS_THRESHOLD")
-    if env_threshold is not None:
-        try:
-            _ALERT_CONFIG["threshold"] = float(env_threshold)
-        except ValueError:
-            logger.warning(
-                "tps-counter: invalid TPS_THRESHOLD=%r, using auto-calculation",
-                env_threshold,
-            )
+    # Read DB path from plugin config, with sensible default
+    default_path = os.path.expanduser("~/.hermes/plugins/tps-counter/tps.db")
+    try:
+        config = {}
+        if hasattr(ctx, "get_config"):
+            config = ctx.get_config("tps_counter", {}) or {}
+        elif hasattr(ctx, "config"):
+            config = getattr(ctx, "config", {}).get("tps_counter", {}) or {}
+    except Exception:
+        config = {}
 
-    env_window = os.environ.get("TPS_EVAL_WINDOW")
-    if env_window is not None:
-        try:
-            _ALERT_CONFIG["eval_window"] = int(env_window)
-        except ValueError:
-            logger.warning(
-                "tps-counter: invalid TPS_EVAL_WINDOW=%r, using default 5",
-                env_window,
-            )
+    db_path = config.get("db_path", default_path)
 
-    # If user set a fixed threshold, pre-populate it for all new sessions
-    if _ALERT_CONFIG["threshold"] is not None:
-        logger.info(
-            "tps-counter: TPS threshold set to %.1f tok/s (from env)",
-            _ALERT_CONFIG["threshold"],
-        )
+    # Initialize persistent store
+    try:
+        from store import PersistentSessionStore
 
-    # Register hooks
+        _STORE = PersistentSessionStore(db_path)
+        logger.info("tps-counter: persistent store at %s", db_path)
+    except Exception as exc:
+        logger.warning("tps-counter: persistence unavailable, using in-memory only: %s", exc)
+        _STORE = None
+
     ctx.register_hook("post_api_request", _on_post_api_request)
 
     # Register tps_alert hook (no-op default so emission doesn't error)
@@ -389,10 +466,7 @@ def get_tps_stats(session_id: str) -> Dict[str, Any]:
     with _STATE_LOCK:
         state = _SESSIONS.get(session_id)
     if state is None:
-        return {
-            "calls": 0, "avg_tps": 0, "last_tps": 0, "peak_tps": 0,
-            "total_output_tokens": 0, "total_input_tokens": 0, "total_tokens": 0,
-        }
+        return {"calls": 0, "avg_tps": 0, "last_tps": 0, "peak_tps": 0, "total_output_tokens": 0, "total_input_tokens": 0, "total_tokens": 0}
     return {
         "calls": state.call_count,
         "avg_tps": round(state.avg_tps, 1),
@@ -408,8 +482,49 @@ def get_tps_stats(session_id: str) -> Dict[str, Any]:
     }
 
 
+def get_model_stats(session_id: str) -> Dict[str, Dict[str, Any]]:
+    """Return per-model TPS stats for a session.
+
+    Returns:
+        Dict mapping model_name → {avg_tps, peak_tps, calls, total_output_tokens, total_duration}
+    """
+    with _STATE_LOCK:
+        session_models = _MODELS.get(session_id, {})
+        return {
+            model: {
+                "avg_tps": round(ms.avg_tps, 1),
+                "peak_tps": round(ms.peak_tps, 1),
+                "calls": ms.call_count,
+                "total_output_tokens": ms.total_output_tokens,
+                "total_duration": round(ms.total_duration, 2),
+            }
+            for model, ms in session_models.items()
+        }
+
+
+def get_provider_stats(session_id: str) -> Dict[str, Dict[str, Any]]:
+    """Return per-provider TPS stats for a session.
+
+    Returns:
+        Dict mapping provider_name → {avg_tps, peak_tps, calls, total_output_tokens, total_duration}
+    """
+    with _STATE_LOCK:
+        session_providers = _PROVIDERS.get(session_id, {})
+        return {
+            provider: {
+                "avg_tps": round(ps.avg_tps, 1),
+                "peak_tps": round(ps.peak_tps, 1),
+                "calls": ps.call_count,
+                "total_output_tokens": ps.total_output_tokens,
+                "total_duration": round(ps.total_duration, 2),
+            }
+            for provider, ps in session_providers.items()
+        }
+
+
 def _cleanup_session(session_id: str) -> None:
-    """Remove all in-memory state for a session."""
+    """Remove all in-memory state for a session (session + model + provider data)."""
     with _STATE_LOCK:
         _SESSIONS.pop(session_id, None)
-    logger.debug("tps-counter: cleaned up session %s", session_id[:8])
+        _MODELS.pop(session_id, None)
+        _PROVIDERS.pop(session_id, None)
