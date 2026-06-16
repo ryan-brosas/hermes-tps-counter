@@ -1,0 +1,57 @@
+{
+  "bead_id": "her-feat-batch-session-stats-ojy",
+  "type": "feature",
+  "priority": 2,
+  "estimate_minutes": 45,
+  "requirements": [
+    {
+      "id": 1,
+      "text": "Provide a batch session TPS endpoint under the existing /api/v1 namespace.",
+      "priority": "MUST",
+      "acceptance": "A client can request stats for multiple session IDs in one HTTP request and receive a 200 response using the same per-session fields as SessionTPSResponse."
+    },
+    {
+      "id": 2,
+      "text": "Preserve existing endpoint contracts.",
+      "priority": "MUST",
+      "acceptance": "Existing tests for health, all sessions, single-session TPS, summary, events, trends, WebSocket, and metrics continue to pass without response-shape regressions."
+    },
+    {
+      "id": 3,
+      "text": "Handle missing sessions deterministically.",
+      "priority": "MUST",
+      "acceptance": "Response includes found sessions and a missing_session_ids list for IDs not present; missing IDs do not cause a 404 for the whole batch."
+    },
+    {
+      "id": 4,
+      "text": "Validate request input.",
+      "priority": "MUST",
+      "acceptance": "Empty session_ids or non-list input is rejected with FastAPI/Pydantic validation semantics; excessive duplicates are normalized or handled without duplicate response rows."
+    },
+    {
+      "id": 5,
+      "text": "Fail cleanly when persistence is unavailable.",
+      "priority": "MUST",
+      "acceptance": "If store is None, the batch endpoint returns HTTP 503 with the same database-unavailable semantics as other session endpoints."
+    },
+    {
+      "id": 6,
+      "text": "Avoid unnecessary database fan-out where practical.",
+      "priority": "SHOULD",
+      "acceptance": "Implementation either adds a store-level batch loader or otherwise keeps the number of DB operations bounded and simple for the expected small local batch size."
+    },
+    {
+      "id": 7,
+      "text": "Document API usage.",
+      "priority": "SHOULD",
+      "acceptance": "README lists the new endpoint and includes request/response JSON examples including missing sessions."
+    }
+  ],
+  "success_criteria": [
+    "POST /api/v1/sessions/batch/tps returns TPS stats for multiple existing session IDs in one request.",
+    "Response includes missing IDs while returning found sessions for partial hits.",
+    "Duplicate session IDs do not produce duplicate response rows.",
+    "Existing API behavior remains unchanged.",
+    "README documents the new endpoint request and response examples."
+  ]
+}

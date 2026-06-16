@@ -18,7 +18,7 @@ from typing import Any, Callable, Deque, Dict, List, Optional, Set
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = logging.getLogger(__name__)
@@ -128,6 +128,15 @@ class SessionTPSResponse(BaseModel):
 
 class SessionListResponse(BaseModel):
     sessions: List[SessionTPSResponse]
+
+
+class BatchSessionTPSRequest(BaseModel):
+    session_ids: List[str] = Field(..., min_length=1)
+
+
+class BatchSessionTPSResponse(BaseModel):
+    sessions: List[SessionTPSResponse]
+    missing_session_ids: List[str]
 
 
 class SummaryResponse(BaseModel):
@@ -308,6 +317,32 @@ def create_app(
             except Exception:
                 db_status = "disconnected"
         return HealthResponse(status="ok", db=db_status)
+
+    @app.post("/api/v1/sessions/batch/tps", response_model=BatchSessionTPSResponse)
+    def batch_session_tps(request: BatchSessionTPSRequest) -> BatchSessionTPSResponse:
+        """Return TPS stats for a bounded batch of session IDs.
+
+        Missing sessions are reported in ``missing_session_ids`` instead of
+        failing the entire batch, and duplicate input IDs are normalized while
+        preserving first-seen order.
+        """
+        if store is None:
+            raise HTTPException(status_code=503, detail="Database not available")
+
+        unique_ids = list(dict.fromkeys(request.session_ids))
+        sessions: List[SessionTPSResponse] = []
+        missing_session_ids: List[str] = []
+        for session_id in unique_ids:
+            data = store.load(session_id)
+            if data is None:
+                missing_session_ids.append(session_id)
+            else:
+                sessions.append(SessionTPSResponse(**data))
+
+        return BatchSessionTPSResponse(
+            sessions=sessions,
+            missing_session_ids=missing_session_ids,
+        )
 
     @app.get("/api/v1/sessions/{session_id}/tps", response_model=SessionTPSResponse)
     def session_tps(session_id: str) -> SessionTPSResponse:
@@ -594,9 +629,13 @@ def create_app(
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
+    # ------------------------------------------------------------------
+    # Built-in dashboard (serves at root path)
+    # ------------------------------------------------------------------
+
     @app.get("/", response_class=HTMLResponse)
     def dashboard() -> HTMLResponse:
-        """Serve the built-in dependency-free TPS dashboard."""
+        """Serve the built-in TPS monitoring dashboard."""
         from dashboard import DASHBOARD_HTML
         return HTMLResponse(content=DASHBOARD_HTML)
 

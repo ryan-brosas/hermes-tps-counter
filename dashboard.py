@@ -1,268 +1,307 @@
-"""Dependency-free HTML dashboard for the TPS Counter API."""
-from __future__ import annotations
+"""Self-contained HTML dashboard for real-time TPS monitoring.
 
-DASHBOARD_HTML = """<!doctype html>
+Served at GET / by the FastAPI app. All CSS and JavaScript are inline —
+no external scripts, stylesheets, fonts, or CDN dependencies.
+"""
+
+DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>TPS Dashboard</title>
-  <style>
-    :root { color-scheme: dark; --bg: #0f172a; --panel: #111827; --muted: #94a3b8; --text: #e5e7eb; --accent: #38bdf8; --good: #22c55e; --warn: #f59e0b; --bad: #ef4444; --line: #1f2937; }
-    * { box-sizing: border-box; }
-    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: radial-gradient(circle at top left, #172554 0, var(--bg) 42rem); color: var(--text); }
-    header { padding: 1.25rem clamp(1rem, 3vw, 2rem); border-bottom: 1px solid var(--line); display: flex; gap: 1rem; justify-content: space-between; align-items: center; flex-wrap: wrap; }
-    h1, h2 { margin: 0; line-height: 1.2; }
-    h1 { font-size: clamp(1.45rem, 4vw, 2.35rem); }
-    h2 { font-size: 1rem; color: #dbeafe; margin-bottom: .75rem; }
-    main { padding: 1rem clamp(1rem, 3vw, 2rem) 2rem; display: grid; gap: 1rem; }
-    .badge { border: 1px solid var(--line); border-radius: 999px; padding: .4rem .75rem; background: rgba(15, 23, 42, .72); font-size: .9rem; display: inline-flex; align-items: center; gap: .45rem; }
-    .dot { width: .65rem; height: .65rem; border-radius: 999px; background: var(--warn); display: inline-block; }
-    .connected .dot { background: var(--good); } .disconnected .dot { background: var(--bad); } .reconnecting .dot, .polling .dot { background: var(--warn); }
-    .subtle { color: var(--muted); font-size: .92rem; }
-    .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
-    .panel { background: rgba(17, 24, 39, .86); border: 1px solid var(--line); border-radius: 1rem; padding: 1rem; box-shadow: 0 18px 50px rgba(0, 0, 0, .22); }
-    .metric { display: flex; flex-direction: column; gap: .25rem; }
-    .metric strong { font-size: clamp(1.35rem, 5vw, 2.15rem); color: #f8fafc; }
-    .metric span { color: var(--muted); font-size: .9rem; }
-    .two-col { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(280px, .7fr); gap: 1rem; }
-    canvas { width: 100%; height: 150px; display: block; background: #020617; border: 1px solid #1e293b; border-radius: .75rem; }
-    table { width: 100%; border-collapse: collapse; font-size: .92rem; }
-    th, td { padding: .65rem .55rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
-    th { color: #bfdbfe; font-weight: 650; }
-    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-    .scroll { overflow-x: auto; }
-    .empty { color: var(--muted); padding: 1rem 0; }
-    footer { color: var(--muted); font-size: .86rem; padding: 0 clamp(1rem, 3vw, 2rem) 1.5rem; }
-    @media (max-width: 840px) { .two-col { grid-template-columns: 1fr; } header { align-items: flex-start; } }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TPS Dashboard</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#0f1117;--card:#1a1d27;--border:#2a2d3a;--text:#e4e4e7;--dim:#71717a;
+--green:#22c55e;--red:#ef4444;--yellow:#eab308;--blue:#3b82f6;--accent:#6366f1}
+body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);
+line-height:1.5;padding:1rem;max-width:1200px;margin:0 auto}
+h1{font-size:1.5rem;font-weight:700;margin-bottom:.5rem;display:flex;align-items:center;gap:.5rem}
+.status-badge{display:inline-block;width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.status-badge.ok{background:var(--green)}
+.status-badge.disconnected{background:var(--red)}
+.status-badge.reconnecting{background:var(--yellow);animation:pulse 1s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:.75rem;margin:1rem 0}
+.card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:1rem}
+.card h2{font-size:.75rem;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);margin-bottom:.25rem}
+.card .value{font-size:1.75rem;font-weight:700;font-variant-numeric:tabular-nums}
+.card .sub{font-size:.8rem;color:var(--dim);margin-top:.15rem}
+.sparkline-wrap{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:1rem;margin:1rem 0}
+.sparkline-wrap h2{font-size:.75rem;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);margin-bottom:.5rem}
+canvas{width:100%;height:80px;display:block}
+table{width:100%;border-collapse:collapse;font-size:.85rem}
+th,td{text-align:left;padding:.5rem .6rem;border-bottom:1px solid var(--border)}
+th{color:var(--dim);font-weight:600;font-size:.75rem;text-transform:uppercase;letter-spacing:.03em}
+td{font-variant-numeric:tabular-nums}
+.session-table{background:var(--card);border:1px solid var(--border);border-radius:8px;overflow:auto;margin:1rem 0}
+.section-title{font-size:1rem;font-weight:600;margin:1.5rem 0 .5rem}
+.no-data{color:var(--dim);padding:1rem;text-align:center}
+.conn-info{font-size:.8rem;color:var(--dim);margin-bottom:1rem}
+</style>
 </head>
 <body>
-  <header>
-    <div>
-      <h1>TPS Dashboard</h1>
-      <div class="subtle">Built-in real-time monitoring for Hermes TPS Counter</div>
-    </div>
-    <div id="connectionBadge" class="badge disconnected" role="status" aria-live="polite"><span class="dot" aria-hidden="true"></span><span id="connectionText">Disconnected</span></div>
-  </header>
-  <main>
-    <section class="grid" aria-label="Aggregate TPS metrics">
-      <div class="panel metric"><span>Overall TPS</span><strong id="overallTps">0.00</strong><span id="lastUpdated">Waiting for data</span></div>
-      <div class="panel metric"><span>Total Calls</span><strong id="totalCalls">0</strong><span>Across tracked sessions</span></div>
-      <div class="panel metric"><span>Total Tokens</span><strong id="totalTokens">0</strong><span>Input + output tokens</span></div>
-      <div class="panel metric"><span>API Health</span><strong id="apiHealth">Unknown</strong><span id="diagnosticSummary">Diagnostics not loaded</span></div>
-    </section>
+<h1><span class="status-badge reconnecting" id="statusDot"></span> TPS Dashboard</h1>
+<div class="conn-info" id="connInfo">Connecting&hellip;</div>
 
-    <section class="two-col">
-      <div class="panel">
-        <h2>Recent TPS Sparkline</h2>
-        <canvas id="sparkline" width="900" height="180" aria-label="Recent TPS history sparkline"></canvas>
-      </div>
-      <div class="panel">
-        <h2>Model / Provider Breakdown</h2>
-        <div id="breakdown" class="empty">No model or provider data yet.</div>
-      </div>
-    </section>
+<div class="grid" id="summaryCards">
+  <div class="card"><h2>Average TPS</h2><div class="value" id="avgTps">&mdash;</div><div class="sub" id="avgTpsSub"></div></div>
+  <div class="card"><h2>Total Calls</h2><div class="value" id="totalCalls">&mdash;</div></div>
+  <div class="card"><h2>Total Tokens</h2><div class="value" id="totalTokens">&mdash;</div></div>
+  <div class="card"><h2>Active Sessions</h2><div class="value" id="totalSessions">&mdash;</div></div>
+</div>
 
-    <section class="panel">
-      <h2>Sessions</h2>
-      <div class="scroll">
-        <table aria-label="Session-level TPS stats">
-          <thead><tr><th>Session</th><th class="num">Last TPS</th><th class="num">Avg TPS</th><th class="num">Peak TPS</th><th class="num">Calls</th><th class="num">Tokens</th><th>Updated</th></tr></thead>
-          <tbody id="sessionsBody"><tr><td colspan="7" class="empty">No sessions loaded.</td></tr></tbody>
-        </table>
-      </div>
-    </section>
-  </main>
-  <footer>Uses <code>/ws/tps</code> for real-time updates and falls back to REST polling via <code>/api/v1/summary</code>, <code>/api/v1/sessions</code>, <code>/api/v1/health</code>, and <code>/api/v1/health/diagnostics</code>.</footer>
+<div class="sparkline-wrap">
+  <h2>Recent TPS (last 30 updates)</h2>
+  <canvas id="sparkline" height="80"></canvas>
+</div>
 
-  <script>
-    (function () {
-      'use strict';
-      const state = { ws: null, reconnectAttempts: 0, pollTimer: null, history: [], sessions: new Map(), models: new Map(), providers: new Map() };
-      const maxHistory = 30;
-      const $ = (id) => document.getElementById(id);
-      const fmt = (n, digits = 0) => Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: digits, minimumFractionDigits: digits });
-      const shortId = (id) => String(id || 'unknown').slice(0, 18);
+<div class="section-title">Sessions</div>
+<div class="session-table">
+  <table>
+    <thead><tr><th>Session</th><th>Last TPS</th><th>Avg TPS</th><th>Peak TPS</th><th>Calls</th><th>Output Tokens</th></tr></thead>
+    <tbody id="sessionBody"><tr><td colspan="6" class="no-data">No sessions yet</td></tr></tbody>
+  </table>
+</div>
 
-      function setConnection(status, message) {
-        const badge = $('connectionBadge');
-        badge.className = 'badge ' + status;
-        $('connectionText').textContent = message;
+<div class="section-title">Model Breakdown</div>
+<div class="session-table">
+  <table>
+    <thead><tr><th>Model</th><th>Avg TPS</th><th>Peak TPS</th><th>Calls</th><th>Output Tokens</th></tr></thead>
+    <tbody id="modelBody"><tr><td colspan="5" class="no-data">No model data yet</td></tr></tbody>
+  </table>
+</div>
+
+<div class="section-title">Provider Breakdown</div>
+<div class="session-table">
+  <table>
+    <thead><tr><th>Provider</th><th>Avg TPS</th><th>Peak TPS</th><th>Calls</th><th>Output Tokens</th></tr></thead>
+    <tbody id="providerBody"><tr><td colspan="5" class="no-data">No provider data yet</td></tr></tbody>
+  </table>
+</div>
+
+<div class="card" style="margin-top:1.5rem">
+  <h2>API Health</h2>
+  <div id="healthInfo" style="font-size:.85rem;color:var(--dim)">Loading&hellip;</div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  // --- State ---
+  var tpsHistory = [];
+  var MAX_HISTORY = 30;
+  var ws = null;
+  var reconnectDelay = 1000;
+  var MAX_RECONNECT = 30000;
+  var pollTimer = null;
+  var wsConnected = false;
+
+  // --- Helpers ---
+  function $(id){ return document.getElementById(id); }
+  function fmt(n){
+    if(n == null || isNaN(n)) return "\\u2014";
+    if(n >= 1e6) return (n/1e6).toFixed(1)+"M";
+    if(n >= 1e3) return (n/1e3).toFixed(1)+"K";
+    return String(n);
+  }
+  function fmtTps(v){
+    if(v == null || isNaN(v)) return "\\u2014";
+    return v.toFixed(1)+" tok/s";
+  }
+
+  // --- Sparkline ---
+  function drawSparkline(){
+    var canvas = $("sparkline");
+    if(!canvas) return;
+    var ctx = canvas.getContext("2d");
+    var dpr = window.devicePixelRatio || 1;
+    var rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * dpr;
+    canvas.height = 80 * dpr;
+    ctx.scale(dpr, dpr);
+    var w = rect.width, h = 80;
+    ctx.clearRect(0,0,w,h);
+    if(tpsHistory.length < 2){return;}
+    var max = Math.max.apply(null, tpsHistory) || 1;
+    var min = 0;
+    var range = max - min || 1;
+    var step = w / (MAX_HISTORY - 1);
+    ctx.beginPath();
+    ctx.strokeStyle = "#6366f1";
+    ctx.lineWidth = 2;
+    for(var i=0;i<tpsHistory.length;i++){
+      var x = i * step;
+      var y = h - ((tpsHistory[i] - min) / range) * (h - 8) - 4;
+      if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+    }
+    ctx.stroke();
+    // fill
+    ctx.lineTo((tpsHistory.length-1)*step, h);
+    ctx.lineTo(0, h);
+    ctx.closePath();
+    ctx.fillStyle = "rgba(99,102,241,0.1)";
+    ctx.fill();
+  }
+
+  // --- Update summary ---
+  function updateSummary(data){
+    $("avgTps").textContent = fmtTps(data.average_tps);
+    $("totalCalls").textContent = fmt(data.total_calls);
+    $("totalTokens").textContent = fmt(data.total_tokens);
+    $("totalSessions").textContent = fmt(data.total_sessions);
+  }
+
+  // --- Update sessions table ---
+  function updateSessions(sessions){
+    var tbody = $("sessionBody");
+    if(!sessions || sessions.length === 0){
+      tbody.innerHTML = '<tr><td colspan="6" class="no-data">No sessions yet</td></tr>';
+      return;
+    }
+    tbody.innerHTML = sessions.map(function(s){
+      return '<tr><td>'+esc(s.session_id)+'</td><td>'+fmtTps(s.last_call_tps)+'</td><td>'
+        +fmtTps(s.avg_tps)+'</td><td>'+fmtTps(s.peak_tps)+'</td><td>'
+        +fmt(s.call_count)+'</td><td>'+fmt(s.total_output_tokens)+'</td></tr>';
+    }).join("");
+  }
+
+  // --- Update model/provider tables ---
+  function updateBreakdown(tbodyId, data, labelKey){
+    var tbody = $(tbodyId);
+    if(!data || Object.keys(data).length === 0){
+      tbody.innerHTML = '<tr><td colspan="5" class="no-data">No '+labelKey+' data yet</td></tr>';
+      return;
+    }
+    tbody.innerHTML = Object.keys(data).map(function(k){
+      var d = data[k];
+      return '<tr><td>'+esc(k)+'</td><td>'+fmtTps(d.avg_tps)+'</td><td>'
+        +fmtTps(d.peak_tps)+'</td><td>'+fmt(d.calls)+'</td><td>'
+        +fmt(d.total_output_tokens)+'</td></tr>';
+    }).join("");
+  }
+
+  function esc(s){var d=document.createElement("div");d.textContent=s;return d.innerHTML;}
+
+  // --- Health ---
+  function updateHealth(info){
+    if(typeof info === "string"){$("healthInfo").textContent=info;return;}
+    var parts = [];
+    if(info.components){
+      Object.keys(info.components).forEach(function(k){
+        var c = info.components[k];
+        parts.push(k+": "+c.status);
+      });
+    }
+    $("healthInfo").textContent = parts.join(" | ") || info.status || "unknown";
+  }
+
+  // --- Connection status ---
+  function setStatus(state, msg){
+    var dot = $("statusDot");
+    dot.className = "status-badge "+state;
+    $("connInfo").textContent = msg;
+  }
+
+  // --- REST polling fallback ---
+  function startPolling(){
+    if(pollTimer) return;
+    pollTimer = setInterval(function(){
+      fetchSummary();
+      fetchSessions();
+    }, 5000);
+  }
+  function stopPolling(){
+    if(pollTimer){clearInterval(pollTimer);pollTimer=null;}
+  }
+
+  // --- REST fetches ---
+  function fetchSummary(){
+    fetch("/api/v1/summary").then(function(r){return r.json();}).then(function(d){
+      updateSummary(d);
+      tpsHistory.push(d.average_tps || 0);
+      if(tpsHistory.length > MAX_HISTORY) tpsHistory.shift();
+      drawSparkline();
+    }).catch(function(){});
+  }
+  function fetchSessions(){
+    fetch("/api/v1/sessions").then(function(r){return r.json();}).then(function(d){
+      updateSessions(d.sessions);
+      // Collect model/provider from first session trend if available
+      if(d.sessions && d.sessions.length > 0){
+        fetchTrends(d.sessions[0].session_id);
       }
+    }).catch(function(){});
+  }
+  function fetchTrends(sid){
+    fetch("/api/v1/trends/"+encodeURIComponent(sid)).then(function(r){
+      if(!r.ok) return null;
+      return r.json();
+    }).then(function(d){
+      if(!d) return;
+      updateBreakdown("modelBody", d.models, "model");
+      updateBreakdown("providerBody", d.providers, "provider");
+    }).catch(function(){});
+  }
+  function fetchHealth(){
+    fetch("/api/v1/health/diagnostics").then(function(r){return r.json();}).then(function(d){
+      updateHealth(d);
+    }).catch(function(e){
+      updateHealth("unreachable");
+    });
+  }
 
-      async function fetchJson(path) {
-        const response = await fetch(path, { headers: { 'Accept': 'application/json' }, cache: 'no-store' });
-        if (!response.ok) throw new Error(path + ' returned ' + response.status);
-        return response.json();
-      }
-
-      function updateSummary(summary) {
-        const tps = Number(summary?.average_tps || summary?.avg_tps || 0);
-        $('overallTps').textContent = fmt(tps, 2);
-        $('totalCalls').textContent = fmt(summary?.total_calls || 0);
-        $('totalTokens').textContent = fmt(summary?.total_tokens || 0);
-        pushHistory(tps);
-      }
-
-      function updateSessions(payload) {
-        const sessions = Array.isArray(payload?.sessions) ? payload.sessions : [];
-        for (const session of sessions) state.sessions.set(session.session_id || 'unknown', session);
-        renderSessions();
-      }
-
-      function updateHealth(health, diagnostics) {
-        $('apiHealth').textContent = health?.status || diagnostics?.status || 'Unknown';
-        const components = diagnostics?.components || {};
-        const bits = Object.keys(components).map((name) => name + ':' + (components[name]?.status || '?'));
-        $('diagnosticSummary').textContent = bits.length ? bits.join(' · ') : 'DB: ' + (health?.db || 'unknown');
-      }
-
-      function updateFromTpsMessage(message) {
-        if (message?.type && message.type !== 'tps_update') return;
-        const data = message?.data || message || {};
-        const sessionId = data.session_id || data.session || 'live';
-        const lastTps = Number(data.last_tps || data.last_call_tps || data.tps || data.avg_tps || 0);
-        const session = Object.assign({}, state.sessions.get(sessionId) || {}, data, {
-          session_id: sessionId,
-          last_call_tps: lastTps,
-          avg_tps: Number(data.avg_tps || data.average_tps || lastTps || 0),
-          peak_tps: Number(data.peak_tps || lastTps || 0),
-          call_count: Number(data.call_count || data.calls || 0),
-          total_input_tokens: Number(data.total_input_tokens || 0),
-          total_output_tokens: Number(data.total_output_tokens || data.total_tokens || 0),
-          updated_at: message?.timestamp || data.updated_at || new Date().toISOString()
-        });
-        state.sessions.set(sessionId, session);
-        collectBreakdowns(data);
-        pushHistory(lastTps);
-        renderSessions();
-        renderBreakdown();
-        $('lastUpdated').textContent = 'Updated ' + new Date().toLocaleTimeString();
-      }
-
-      function collectBreakdowns(data) {
-        mergeBreakdown(state.models, data?.models || data?.model_breakdown || {});
-        mergeBreakdown(state.providers, data?.providers || data?.provider_breakdown || {});
-        if (data?.model) state.models.set(data.model, normalizeBreakdown(data));
-        if (data?.provider) state.providers.set(data.provider, normalizeBreakdown(data));
-      }
-
-      function normalizeBreakdown(item) {
-        return { avg_tps: item?.avg_tps || item?.average_tps || item?.tps || 0, peak_tps: item?.peak_tps || 0, calls: item?.calls || item?.call_count || 0, total_output_tokens: item?.total_output_tokens || item?.output_tokens || 0 };
-      }
-
-      function mergeBreakdown(target, entries) {
-        if (!entries || typeof entries !== 'object') return;
-        for (const [name, value] of Object.entries(entries)) target.set(name, normalizeBreakdown(value || {}));
-      }
-
-      function renderSessions() {
-        const body = $('sessionsBody');
-        const rows = Array.from(state.sessions.values()).sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
-        if (!rows.length) { body.innerHTML = '<tr><td colspan="7" class="empty">No sessions loaded.</td></tr>'; return; }
-        body.innerHTML = rows.map((s) => {
-          const tokens = Number(s.total_tokens || 0) || Number(s.total_input_tokens || 0) + Number(s.total_output_tokens || 0);
-          return '<tr><td title="' + escapeHtml(s.session_id) + '">' + escapeHtml(shortId(s.session_id)) + '</td>' +
-            '<td class="num">' + fmt(s.last_call_tps || s.last_tps || 0, 2) + '</td>' +
-            '<td class="num">' + fmt(s.avg_tps || 0, 2) + '</td>' +
-            '<td class="num">' + fmt(s.peak_tps || 0, 2) + '</td>' +
-            '<td class="num">' + fmt(s.call_count || s.calls || 0) + '</td>' +
-            '<td class="num">' + fmt(tokens) + '</td>' +
-            '<td>' + escapeHtml(s.updated_at || '') + '</td></tr>';
-        }).join('');
-      }
-
-      function renderBreakdown() {
-        const root = $('breakdown');
-        const sections = [];
-        if (state.models.size) sections.push(renderBreakdownTable('Models', state.models));
-        if (state.providers.size) sections.push(renderBreakdownTable('Providers', state.providers));
-        root.className = sections.length ? '' : 'empty';
-        root.innerHTML = sections.length ? sections.join('') : 'No model or provider data yet.';
-      }
-
-      function renderBreakdownTable(title, map) {
-        const rows = Array.from(map.entries()).map(([name, value]) => '<tr><td>' + escapeHtml(name) + '</td><td class="num">' + fmt(value.avg_tps, 2) + '</td><td class="num">' + fmt(value.peak_tps, 2) + '</td><td class="num">' + fmt(value.calls) + '</td></tr>').join('');
-        return '<h3>' + title + '</h3><table><thead><tr><th>Name</th><th class="num">Avg TPS</th><th class="num">Peak</th><th class="num">Calls</th></tr></thead><tbody>' + rows + '</tbody></table>';
-      }
-
-      function pushHistory(value) {
-        const n = Number(value || 0);
-        state.history.push(n);
-        while (state.history.length > maxHistory) state.history.shift();
-        drawSparkline();
-      }
-
-      function drawSparkline() {
-        const canvas = $('sparkline');
-        const ctx = canvas.getContext('2d');
-        const w = canvas.width, h = canvas.height;
-        ctx.clearRect(0, 0, w, h);
-        ctx.strokeStyle = '#1e293b'; ctx.lineWidth = 1;
-        for (let i = 1; i < 4; i++) { ctx.beginPath(); ctx.moveTo(0, i * h / 4); ctx.lineTo(w, i * h / 4); ctx.stroke(); }
-        if (!state.history.length) return;
-        const max = Math.max(1, ...state.history);
-        ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 4; ctx.beginPath();
-        state.history.forEach((value, index) => {
-          const x = state.history.length === 1 ? w : index * (w / (state.history.length - 1));
-          const y = h - ((value / max) * (h - 20)) - 10;
-          if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-        });
-        ctx.stroke();
-      }
-
-      async function loadInitialState() {
-        try {
-          const [summary, sessions, health, diagnostics] = await Promise.allSettled([
-            fetchJson('/api/v1/summary'), fetchJson('/api/v1/sessions'), fetchJson('/api/v1/health'), fetchJson('/api/v1/health/diagnostics')
-          ]);
-          if (summary.status === 'fulfilled') updateSummary(summary.value);
-          if (sessions.status === 'fulfilled') updateSessions(sessions.value);
-          updateHealth(health.value || {}, diagnostics.value || {});
-          $('lastUpdated').textContent = 'Loaded ' + new Date().toLocaleTimeString();
-        } catch (error) {
-          $('diagnosticSummary').textContent = 'REST load failed: ' + error.message;
+  // --- WebSocket ---
+  function connectWS(){
+    var proto = location.protocol === "https:" ? "wss:" : "ws:";
+    var url = proto + "//" + location.host + "/ws/tps";
+    try{ ws = new WebSocket(url); }catch(e){
+      setStatus("disconnected","WebSocket error; using REST polling");
+      startPolling();
+      return;
+    }
+    ws.onopen = function(){
+      wsConnected = true;
+      reconnectDelay = 1000;
+      setStatus("ok","Connected via WebSocket");
+      stopPolling();
+    };
+    ws.onmessage = function(ev){
+      try{
+        var msg = JSON.parse(ev.data);
+        if(msg.type === "tps_update" && msg.data){
+          var d = msg.data;
+          var tps = d.last_tps || d.avg_tps || 0;
+          tpsHistory.push(tps);
+          if(tpsHistory.length > MAX_HISTORY) tpsHistory.shift();
+          drawSparkline();
+          // Refresh summary + sessions periodically on WS data
+          fetchSummary();
+          fetchSessions();
         }
-      }
+      }catch(e){}
+    };
+    ws.onclose = function(){
+      wsConnected = false;
+      setStatus("reconnecting","Reconnecting in "+Math.round(reconnectDelay/1000)+"s\u2026");
+      startPolling();
+      setTimeout(function(){ reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT); connectWS(); }, reconnectDelay);
+    };
+    ws.onerror = function(){
+      try{ws.close();}catch(e){}
+    };
+  }
 
-      function startPollingFallback() {
-        if (state.pollTimer) return;
-        setConnection('polling', 'Polling REST fallback');
-        state.pollTimer = setInterval(loadInitialState, 5000);
-      }
+  // --- Init ---
+  fetchSummary();
+  fetchSessions();
+  fetchHealth();
+  connectWS();
 
-      function stopPollingFallback() {
-        if (state.pollTimer) clearInterval(state.pollTimer);
-        state.pollTimer = null;
-      }
-
-      function connectWebSocket() {
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const url = protocol + '//' + window.location.host + '/ws/tps';
-        setConnection(state.reconnectAttempts ? 'reconnecting' : 'disconnected', state.reconnectAttempts ? 'Reconnecting...' : 'Connecting...');
-        try { state.ws = new WebSocket(url); } catch (error) { scheduleReconnect(); startPollingFallback(); return; }
-        state.ws.onopen = () => { state.reconnectAttempts = 0; stopPollingFallback(); setConnection('connected', 'WebSocket connected'); };
-        state.ws.onmessage = (event) => { try { updateFromTpsMessage(JSON.parse(event.data)); } catch (error) { console.warn('Invalid TPS update', error); } };
-        state.ws.onerror = () => { setConnection('disconnected', 'WebSocket error'); };
-        state.ws.onclose = () => { setConnection('disconnected', 'WebSocket disconnected'); startPollingFallback(); scheduleReconnect(); };
-      }
-
-      function scheduleReconnect() {
-        state.reconnectAttempts += 1;
-        const backoff = Math.min(30000, Math.pow(2, Math.min(state.reconnectAttempts - 1, 5)) * 1000);
-        setConnection('reconnecting', 'Reconnecting in ' + Math.round(backoff / 1000) + 's');
-        setTimeout(connectWebSocket, backoff);
-      }
-
-      function escapeHtml(value) {
-        return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
-      }
-
-      loadInitialState();
-      connectWebSocket();
-    }());
-  </script>
+  // Refresh health every 30s
+  setInterval(fetchHealth, 30000);
+})();
+</script>
 </body>
-</html>
-"""
+</html>"""

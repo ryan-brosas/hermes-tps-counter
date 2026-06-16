@@ -1,0 +1,76 @@
+{
+  "bead_id": "her-privacy-redaction-pis",
+  "type": "feature",
+  "priority": 2,
+  "estimate_minutes": 75,
+  "requirements": [
+    {
+      "id": 1,
+      "text": "Provide one shared redaction policy for TPS identifier fields.",
+      "priority": "MUST",
+      "acceptance": "A documented helper/config path governs session_id, model, provider, and future identifier-like fields instead of duplicating ad hoc transformations per surface."
+    },
+    {
+      "id": 2,
+      "text": "Preserve backward compatibility when redaction is disabled.",
+      "priority": "MUST",
+      "acceptance": "With privacy mode off/default-compatible, existing get_tps_stats, _tps_snapshot, registration, and current tests continue to observe existing raw values and field names."
+    },
+    {
+      "id": 3,
+      "text": "Support deterministic pseudonymous identifiers.",
+      "priority": "MUST",
+      "acceptance": "The same raw value maps to the same non-raw value for a stable configured scope/salt, while different raw values remain distinguishable enough for grouping."
+    },
+    {
+      "id": 4,
+      "text": "Prevent raw identifiers from leaving trusted state when redaction is enabled.",
+      "priority": "MUST",
+      "acceptance": "Status snapshots, Python helper/API results, observability contract metadata, debug logs, dashboard payloads, future REST/WebSocket payloads, Prometheus labels, and exports use redacted/hashed/omitted values for covered fields when available."
+    },
+    {
+      "id": 5,
+      "text": "Avoid leaking secrets in configuration or diagnostics.",
+      "priority": "MUST",
+      "acceptance": "Any salt/secret used for pseudonyms is not emitted in logs, contract output, snapshots, API responses, exports, or README examples."
+    },
+    {
+      "id": 6,
+      "text": "Keep hook-path overhead low and dependency-free.",
+      "priority": "MUST",
+      "acceptance": "Redaction uses standard-library primitives and bounded per-field work; no network calls, background workers, or external packages are introduced."
+    },
+    {
+      "id": 7,
+      "text": "Make privacy mode discoverable without exposing raw identifiers.",
+      "priority": "SHOULD",
+      "acceptance": "The observability contract or diagnostics indicate the active redaction mode and per-field treatment (raw, redacted, pseudonymized, omitted) without showing secret material."
+    },
+    {
+      "id": 8,
+      "text": "Support per-field policy evolution.",
+      "priority": "SHOULD",
+      "acceptance": "The design allows allowlist/denylist or per-field overrides so future identifier-like fields can be added safely."
+    },
+    {
+      "id": 9,
+      "text": "Document consumer-facing behavior.",
+      "priority": "SHOULD",
+      "acceptance": "README or contract docs explain modes, defaults, field treatment, deterministic grouping guarantees, and migration guidance."
+    },
+    {
+      "id": 10,
+      "text": "Cover privacy behavior with focused tests.",
+      "priority": "SHOULD",
+      "acceptance": "Tests assert deterministic pseudonyms, disabled-mode backward compatibility, no raw IDs in enabled outbound surfaces, and unchanged TPS counters."
+    }
+  ],
+  "success_criteria": [
+    "A single redaction policy/helper exists for identifier-like TPS observability fields.",
+    "Disabled/default-compatible mode preserves existing public behavior.",
+    "Enabled mode does not expose raw covered identifiers in outbound data.",
+    "Pseudonyms are deterministic and non-raw.",
+    "Documentation explains privacy modes and field treatment.",
+    "No regressions in TPS tracking or observability contracts."
+  ]
+}

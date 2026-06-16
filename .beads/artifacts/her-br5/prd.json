@@ -1,0 +1,79 @@
+{
+  "bead_id": "her-br5",
+  "title": "Add bounded in-memory session retention controls",
+  "type": "feature",
+  "priority": 2,
+  "estimate_minutes": 60,
+  "requirements": [
+    {
+      "id": 1,
+      "text": "Provide opt-in max-session retention for _SESSIONS.",
+      "priority": "MUST",
+      "acceptance": "Setting a documented env var to a positive integer causes the plugin to retain no more than that many inactive sessions after pruning."
+    },
+    {
+      "id": 2,
+      "text": "Provide opt-in stale-session age pruning.",
+      "priority": "MUST",
+      "acceptance": "Setting a documented env var to a positive age removes sessions older than that age while preserving sessions updated within the threshold."
+    },
+    {
+      "id": 3,
+      "text": "Preserve default behavior.",
+      "priority": "MUST",
+      "acceptance": "With no retention env vars set, existing tests and public helper behavior remain backward-compatible."
+    },
+    {
+      "id": 4,
+      "text": "Preserve missing-session semantics.",
+      "priority": "MUST",
+      "acceptance": "get_tps_stats() returns the existing zero-value structure for pruned sessions and never recreates pruned sessions merely by reading stats."
+    },
+    {
+      "id": 5,
+      "text": "Keep retention dependency-free and non-invasive.",
+      "priority": "MUST",
+      "acceptance": "No external packages, background threads, REST servers, schedulers, or process-wide timers are introduced."
+    },
+    {
+      "id": 6,
+      "text": "Make policy visible to consumers.",
+      "priority": "SHOULD",
+      "acceptance": "get_observability_contract() or related diagnostics expose enabled/disabled state, env var names, and active numeric limits without raw session identifiers."
+    },
+    {
+      "id": 7,
+      "text": "Keep privacy guarantees intact.",
+      "priority": "MUST",
+      "acceptance": "Retention diagnostics do not expose raw session IDs, model names, provider names, salts, or other sensitive identifiers."
+    },
+    {
+      "id": 8,
+      "text": "Cover concurrency edge cases.",
+      "priority": "SHOULD",
+      "acceptance": "Tests exercise pruning while reads/writes occur and confirm no crashes or inconsistent public return shapes."
+    }
+  ],
+  "success_criteria": [
+    "Retention is disabled by default and existing TPS/session behavior remains compatible.",
+    "Enabling HERMES_TPS_MAX_SESSIONS prunes the in-memory session dictionary to the configured bound.",
+    "Enabling HERMES_TPS_SESSION_TTL_SECONDS prunes stale sessions without sleeping in real time.",
+    "Pruned sessions return the existing zero-value stats shape.",
+    "Retention policy is documented in the observability contract or diagnostics without exposing sensitive identifiers.",
+    "No external dependencies, background threads, package manager commands, or Hermes core changes are required."
+  ],
+  "out_of_scope": [
+    "SQLite persistence, historical exports, or persisted-row retention.",
+    "REST, WebSocket, Prometheus, or dashboard APIs.",
+    "Sampling of call events or SQLite write amplification controls covered by her-6od.",
+    "Monolith/package decomposition covered by her-cbe.",
+    "Batch session stats endpoint work covered by her-feat-batch-session-stats-ojy.",
+    "Hermes core status-bar rendering changes."
+  ],
+  "artifacts": {
+    "prd_md": ".beads/artifacts/her-br5/prd.md",
+    "prd_json": ".beads/artifacts/her-br5/prd.json",
+    "decisions_md": ".beads/artifacts/her-br5/decisions.md",
+    "progress_txt": ".beads/artifacts/her-br5/progress.txt"
+  }
+}
