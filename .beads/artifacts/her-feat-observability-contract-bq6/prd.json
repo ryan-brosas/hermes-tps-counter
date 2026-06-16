@@ -1,0 +1,72 @@
+{
+  "bead_id": "her-feat-observability-contract-bq6",
+  "title": "Add machine-readable observability contract endpoint for TPS snapshots, API responses, and Prometheus metrics metadata",
+  "type": "feature",
+  "priority": 2,
+  "estimate_minutes": 60,
+  "labels": ["observability", "api", "metrics"],
+  "requirements": [
+    {
+      "id": 1,
+      "text": "Expose a stable machine-readable observability contract with contract version and plugin version.",
+      "priority": "MUST",
+      "acceptance_criteria": "A JSON-compatible contract is available via a documented API route and/or helper and includes contract version plus plugin version."
+    },
+    {
+      "id": 2,
+      "text": "Define TPS status snapshot schema.",
+      "priority": "MUST",
+      "acceptance_criteria": "Contract lists snapshot fields, scalar types, units, freshness semantics, and session mismatch guidance."
+    },
+    {
+      "id": 3,
+      "text": "Define API and WebSocket payload metadata.",
+      "priority": "MUST",
+      "acceptance_criteria": "Contract identifies existing TPS REST/WebSocket surfaces and describes response/event payload fields without altering those responses."
+    },
+    {
+      "id": 4,
+      "text": "Define Prometheus metric metadata.",
+      "priority": "MUST",
+      "acceptance_criteria": "Contract lists metric names, types, units, and label cardinality expectations."
+    },
+    {
+      "id": 5,
+      "text": "Preserve backward compatibility.",
+      "priority": "MUST",
+      "acceptance_criteria": "Existing plugin registration, hook path, status snapshot injection, REST routes, WebSocket behavior, and metrics output remain additive-only."
+    },
+    {
+      "id": 6,
+      "text": "Keep runtime overhead low.",
+      "priority": "SHOULD",
+      "acceptance_criteria": "Contract generation is static or cheap and does not inspect all sessions or query large SQLite tables."
+    },
+    {
+      "id": 7,
+      "text": "Document consumer guidance.",
+      "priority": "SHOULD",
+      "acceptance_criteria": "README explains endpoint/helper location, contract versioning, and how consumers should validate or ignore unknown fields."
+    },
+    {
+      "id": 8,
+      "text": "Add focused coverage.",
+      "priority": "SHOULD",
+      "acceptance_criteria": "Tests assert required contract sections and representative fields/metrics, including optional dependency behavior."
+    }
+  ],
+  "success_criteria": [
+    "A machine-readable observability contract is exposed at a stable documented location.",
+    "The contract includes field names, types, units, freshness semantics, metric types, and label/cardinality notes for current surfaces.",
+    "Existing behavior is additive-only and unchanged.",
+    "README documents contract versioning and consumer tolerance for unknown fields."
+  ],
+  "graph_fit": {
+    "track": "track-A adjunct after current in-progress API/performance work",
+    "robot_plan_total_actionable_before_create": 1,
+    "blocked_count_before_create": 0,
+    "label_attention": ["metrics", "feature", "api", "observability"],
+    "dedup": "No open or in-progress br search match; semantic search returned adjacent closed/API/Prometheus/dashboard work but no contract endpoint bead."
+  },
+  "wave_count": 0
+}

@@ -1,0 +1,8 @@
+status: implemented
+updated: 2026-06-17
+
+- [x] Wave 1: surface inventory and privacy mode/treatment design complete.
+- [x] Wave 2: shared privacy policy/helper implemented and wired into status snapshot/log surfaces.
+- [x] Wave 3: observability contract privacy metadata added; optional absent surfaces kept unavailable.
+- [x] Wave 4: focused privacy tests and README guidance added.
+- [x] Wave 5: verification commands run; bead lint fixed and passing.

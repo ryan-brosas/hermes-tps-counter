@@ -1,0 +1,5 @@
+Wave 1: complete — inspected branch surfaces; no api.py/WebSocket/prometheus_metrics.py present.
+Wave 2: complete — added static dependency-free observability contract helper; no REST route added because no route layer exists.
+Wave 3: complete — added focused contract shape and compatibility tests.
+Wave 4: complete — documented observability contract, versioning, helper-only branch availability, and cardinality guidance.
+Wave 5: complete — tests, smoke check, br lint, dependency-cycle check, and br sync passed; completion evidence written.

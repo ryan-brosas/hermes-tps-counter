@@ -1,0 +1,100 @@
+{
+  "bead_id": "her-privacy-redaction-pis",
+  "status": "passed",
+  "completed_at": "2026-06-17",
+  "implementation_summary": [
+    "Added a shared dependency-free TPS privacy policy/helper in __init__.py.",
+    "Applied policy to outbound status snapshots and debug logs while preserving raw internal session lookup state.",
+    "Added secret-safe observability contract privacy metadata and README migration guidance.",
+    "Added focused tests for disabled compatibility, deterministic pseudonyms, no-leak outbound behavior, secret safety, per-field treatments, and unchanged TPS counters."
+  ],
+  "verification_commands": [
+    {
+      "command": "pytest tests/test_privacy.py tests/test_api.py tests/test_hook.py",
+      "status": "passed",
+      "evidence": "32 passed in 0.06s"
+    },
+    {
+      "command": "python3 smoke check for get_observability_contract JSON serialization, privacy metadata, disabled raw compatibility, enabled deterministic pseudonym, and secret non-disclosure",
+      "status": "passed",
+      "evidence": "privacy smoke ok session_id:pseudonym:e3e37509395de6f6"
+    },
+    {
+      "command": "br lint her-privacy-redaction-pis --json",
+      "status": "passed",
+      "evidence": "{\"total\":0,\"issues\":0,\"results\":[]}"
+    },
+    {
+      "command": "bv --robot-suggest",
+      "status": "passed_with_suggestions",
+      "evidence": "Completed; returned label/dependency suggestions only, no blocker for this implementation."
+    },
+    {
+      "command": "br dep cycles --blocking-only --json",
+      "status": "passed",
+      "evidence": "No blocking cycles."
+    },
+    {
+      "command": "br sync --flush-only",
+      "status": "passed",
+      "evidence": "Nothing to export (no dirty issues)."
+    }
+  ],
+  "requirements_met": [
+    {
+      "requirement": "Single shared redaction policy/helper governs identifier fields including session_id, model, provider, and configured future identifier-like fields.",
+      "status": "passed",
+      "evidence": "_PrivacyPolicy, _redact_identifier, _redact_payload, get_privacy_diagnostics; tests/test_privacy.py covers session_id/model/provider and tenant_id via HERMES_TPS_PRIVACY_FIELDS."
+    },
+    {
+      "requirement": "Disabled/default-compatible mode preserves existing public behavior.",
+      "status": "passed",
+      "evidence": "Existing tests/test_api.py and tests/test_hook.py pass; test_disabled_mode_returns_raw_identifiers_by_default covers helper compatibility."
+    },
+    {
+      "requirement": "Enabled mode does not emit raw covered identifiers on available outbound surfaces.",
+      "status": "passed",
+      "evidence": "test_enabled_snapshot_and_logs_do_not_emit_raw_identifiers checks status snapshot and debug logs; contract tests check no raw sample identifiers or secret material."
+    },
+    {
+      "requirement": "Deterministic pseudonyms are stable, distinct, and non-raw.",
+      "status": "passed",
+      "evidence": "test_enabled_pseudonyms_are_deterministic_distinct_and_non_raw and test_changing_salt_changes_pseudonym."
+    },
+    {
+      "requirement": "Salt/secret configuration is never emitted.",
+      "status": "passed",
+      "evidence": "get_privacy_diagnostics and contract expose only secret_configured/secret_material_exposed; test_contract_and_diagnostics_describe_privacy_without_secret verifies configured salt is absent."
+    },
+    {
+      "requirement": "Hook-path overhead remains bounded and dependency-free.",
+      "status": "passed",
+      "evidence": "Implementation uses only standard library hmac/hashlib/os and per-payload field traversal; no packages, network calls, workers, or session scans added."
+    },
+    {
+      "requirement": "Contract/docs state active privacy mode and per-field treatment without over-promising unavailable surfaces.",
+      "status": "passed",
+      "evidence": "get_observability_contract()[\"privacy\"] added; README Privacy Redaction added; tests assert REST/WebSocket/Prometheus availability remains false."
+    },
+    {
+      "requirement": "TPS counters unchanged.",
+      "status": "passed",
+      "evidence": "tests/test_hook.py and tests/test_api.py pass; privacy no-leak test verifies raw get_tps_stats lookup still returns expected counters."
+    }
+  ],
+  "blast_radius_covered": {
+    "changed_files": [
+      "__init__.py",
+      "README.md",
+      "tests/test_privacy.py",
+      ".beads/artifacts/her-privacy-redaction-pis/solve-ledger.md",
+      ".beads/artifacts/her-privacy-redaction-pis/progress.txt",
+      ".beads/artifacts/her-privacy-redaction-pis/completion-evidence.json"
+    ],
+    "optional_surfaces": {
+      "dashboard.py": "absent",
+      "prometheus_metrics.py": "absent",
+      "store.py": "absent"
+    }
+  }
+}

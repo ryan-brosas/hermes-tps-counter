@@ -1,6 +1,6 @@
 # hermes-tps-counter
 
-Hermes Agent plugin that tracks tokens-per-second (TPS) throughput and displays it in the status bar.
+Hermes Agent plugin that tracks tokens-per-second (TPS) throughput after LLM calls and exposes it to status-bar and in-process observability consumers.
 
 ## What It Does
 
@@ -8,27 +8,51 @@ Hermes Agent plugin that tracks tokens-per-second (TPS) throughput and displays 
 - Maintains per-session stats: last TPS, rolling average, peak TPS, total input/output/total tokens
 - Injects TPS data into the Hermes status bar: `⚕ glm-5.1 │ ⚡114 tok/s │ 20.2K/202.8K │ [█░░░░░░░░░] 10% │ 1m │ ⏲ 28s │ ✓ 4s`
 
-## Install
+## Quickstart: Install, Restart, Verify
+
+From this repository checkout, copy the plugin into a Hermes plugins directory, restart Hermes, and trigger an LLM call:
 
 ```bash
-# Copy plugin to Hermes plugins directory
-cp -r . ~/.hermes/plugins/tps-counter/
+# From the hermes-tps-counter repository root
+mkdir -p ~/.hermes/plugins
+rm -rf ~/.hermes/plugins/tps-counter
+cp -R . ~/.hermes/plugins/tps-counter
 
-# Restart Hermes to load the plugin
+# Restart Hermes so the plugin loader sees plugin.yaml and registers post_api_request.
+# Then run a normal Hermes LLM interaction that produces output tokens.
 ```
 
-## Status Bar Integration
+Verification checklist:
 
-The plugin exposes TPS data via `agent._tps_snapshot` which the status bar reads. This requires small patches to the Hermes agent codebase:
+1. Confirm the copied plugin contains `~/.hermes/plugins/tps-counter/plugin.yaml` with `name: tps-counter` and hook `post_api_request`.
+2. Restart Hermes; look for a plugin-loader log line equivalent to `tps-counter plugin registered` if your runtime logs plugin registration.
+3. Make a successful LLM call with output tokens and a positive API duration.
+4. Verify TPS through one of the currently available in-process surfaces:
+   - Status-bar integration reads `agent._tps_snapshot` on the active CLI agent once the status-bar patch points below are present.
+   - Python consumers can call `get_tps_stats(session_id)` for the active session.
 
-### 1. `hermes_cli/__init__.py` — Add active CLI instance global
+The plugin does not install a REST route, WebSocket stream, Prometheus exporter, package manager dependency, or standalone daemon on this branch.
+
+## Status-Bar Integration
+
+The plugin produces status-bar data, but Hermes core must still expose the active CLI instance and render the fragment. The expected flow is:
+
+1. Hermes starts the CLI and stores the active CLI instance in `hermes_cli._ACTIVE_CLI_INSTANCE`.
+2. The plugin receives `post_api_request` after a successful LLM call.
+3. The plugin calculates TPS and assigns the latest privacy-treated payload to `agent._tps_snapshot` on that active CLI agent.
+4. The status-bar snapshot builder copies safe TPS fields into its own render snapshot.
+5. The fragment renderer shows a short label such as `⚡114 tok/s` only when the value is fresh, session-matched, and positive.
+
+### Required Hermes Patch Points
+
+#### 1. `hermes_cli/__init__.py` — active CLI instance global
 
 ```python
-# At the bottom of the file:
+# At module scope:
 _ACTIVE_CLI_INSTANCE = None
 ```
 
-### 2. `cli.py` — Register CLI instance on startup
+#### 2. `cli.py` — register the active CLI instance on startup
 
 After `cli = HermesCLI(...)`:
 
@@ -40,65 +64,34 @@ except Exception:
     pass
 ```
 
-### 3. `cli.py` — Inject TPS into status bar snapshot
+#### 3. `cli.py` — copy TPS into the status-bar snapshot
 
-In `_get_status_bar_snapshot()`, before `return snapshot`:
-
-```python
-# Inject TPS data from plugins (e.g. tps-counter)
-tps = getattr(agent, "_tps_snapshot", None)
-if tps:
-    tps_val = tps.get("last_tps", 0)
-    if tps_val > 0:
-        snapshot["tps_last"] = tps_val
-        snapshot["tps_avg"] = tps.get("avg_tps", 0)
-        snapshot["tps_label"] = f"⚡{tps_val:.0f} tok/s"
-    else:
-        snapshot["tps_label"] = ""
-else:
-    snapshot["tps_label"] = ""
-```
-
-### Stale / Session-Mismatch Handling
-
-Every `_tps_snapshot` includes freshness metadata that consumers can use to suppress stale or cross-session TPS values:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `updated_at` | `float` | Wall-clock time (`time.time()`) when the snapshot was created. Useful for logging and diagnostics. |
-| `updated_monotonic` | `float` | Monotonic time (`time.monotonic()`) when the snapshot was created. Use this for robust age calculations that survive system clock changes. |
-| `session_id` | `str` | The session that produced this snapshot. Compare against the active session to detect cross-session data leakage. |
-
-**Recommended stale-threshold behavior** — consumers should compare `time.monotonic() - snapshot["updated_monotonic"]` against a configurable threshold (e.g. 30–120 seconds). If the age exceeds the threshold, suppress or gray-out the TPS display rather than showing potentially stale data.
-
-**Recommended session-mismatch behavior** — if `snapshot["session_id"]` does not match the active session identifier, consumers should ignore or reset the TPS display.
-
-**Example with freshness checks:**
+In `_get_status_bar_snapshot()`, before `return snapshot`, consume `agent._tps_snapshot` defensively:
 
 ```python
 import time
 
+STALE_THRESHOLD_SECONDS = 60
+
 tps = getattr(agent, "_tps_snapshot", None)
+snapshot["tps_label"] = ""
+
 if tps:
     age = time.monotonic() - tps.get("updated_monotonic", 0)
     session_match = tps.get("session_id") == active_session_id
-    if age < STALE_THRESHOLD and session_match:
+    if age <= STALE_THRESHOLD_SECONDS and session_match:
         tps_val = tps.get("last_tps", 0)
         if tps_val > 0:
+            snapshot["tps_last"] = tps_val
+            snapshot["tps_avg"] = tps.get("avg_tps", 0)
             snapshot["tps_label"] = f"⚡{tps_val:.0f} tok/s"
-        else:
-            snapshot["tps_label"] = ""
-    else:
-        snapshot["tps_label"] = ""  # Suppress stale or mismatched data
-else:
-    snapshot["tps_label"] = ""
 ```
 
-All freshness fields are **additive and backward compatible** — existing consumers that do not read them will continue to work unchanged. The stale-threshold value is implementation-defined and should be tuned to match the consumer's rendering cadence and acceptable staleness window.
+If privacy mode pseudonymizes, redacts, or omits `session_id`, compare the active session identifier after applying the same policy described by `get_observability_contract()["privacy"]["field_treatments"]`; do not compare a raw active session id to a privacy-treated snapshot id.
 
-### 4. `cli.py` — Render TPS in status bar fragments
+#### 4. `cli.py` — render the TPS status fragment
 
-In `_get_status_bar_fragments()`, wide variant (>=76 cols), after the model_short fragment:
+In `_get_status_bar_fragments()`, add the label only when non-empty. For the wide variant (>=76 columns), place it after the model fragment:
 
 ```python
 tps_label = snapshot.get("tps_label", "")
@@ -107,9 +100,35 @@ if tps_label:
     frags.append(("class:status-bar-dim", " │ "))
 ```
 
-For medium variant (52-75 cols), same but with `" · "` separator.
+For medium layouts (52-75 columns), use the same label with the existing medium separator style, such as `" · "`.
 
-## API
+### Snapshot Fields
+
+`agent._tps_snapshot` is the latest outbound status payload for one successful call. Current fields are:
+
+| Field | Presence | Description |
+|-------|----------|-------------|
+| `last_tps` | Required | Unrounded TPS for the most recent successful API call: `output_tokens / api_duration`. |
+| `avg_tps` | Required | Unrounded rolling average for the session: total output tokens / total API duration. |
+| `peak_tps` | Required | Highest `last_tps` seen for the session. |
+| `output_tokens` | Required | Cumulative output tokens recorded for the session. |
+| `updated_at` | Required | Wall-clock `time.time()` timestamp for logging/diagnostics. Do not use it for robust age checks. |
+| `updated_monotonic` | Required | `time.monotonic()` timestamp for stale-display checks. |
+| `session_id` | Required unless omitted by privacy policy | Session that produced the snapshot; privacy mode may pseudonymize, redact, or omit it. |
+| `model` | Optional | Present when the hook receives `model`; privacy mode may transform it. |
+| `provider` | Optional | Present when the hook receives `provider`; privacy mode may transform it. |
+
+Display rules for consumers:
+
+- Show TPS only when `last_tps > 0`.
+- Leave `tps_label` empty for missing snapshots, zero/negative TPS, stale snapshots, or session mismatches. This avoids misleading labels.
+- Calculate age with `time.monotonic() - snapshot["updated_monotonic"]`; use a consumer-defined threshold, commonly 30-120 seconds.
+- Suppress or gray-out values beyond that threshold.
+- Ignore or clear the display when `snapshot["session_id"]` does not match the active session after applying the same privacy treatment policy.
+
+## In-Process API Helper
+
+Use `get_tps_stats(session_id)` for read-only session stats inside the same Python process:
 
 ```python
 from tps_counter import get_tps_stats, get_model_stats

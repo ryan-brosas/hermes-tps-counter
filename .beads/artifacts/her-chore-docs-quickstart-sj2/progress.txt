@@ -1,0 +1,2 @@
+2026-06-17: Claimed by daedalus. README documentation update implemented and verified.
+Verification: required README term search PASS; python3 -m pytest -q PASS (60 passed); bv impact PASS; br lint PASS; dep cycles PASS; git diff --check PASS; br doctor WARN for recoverable pre-existing sqlite anomaly.
