@@ -51,6 +51,7 @@ _db_write_errors: Any = None
 _db_read_errors: Any = None
 _ws_broadcast_failures: Any = None
 _ws_dead_clients: Any = None
+_rate_limited_total: Any = None
 
 # Operational health gauges
 _ws_active_connections: Any = None
@@ -87,7 +88,7 @@ def _init_metrics() -> None:
     global _tps_model_avg, _tps_model_peak
     global _tps_provider_avg, _tps_provider_peak
     global _usage_extraction_failures, _db_write_errors, _db_read_errors
-    global _ws_broadcast_failures, _ws_dead_clients
+    global _ws_broadcast_failures, _ws_dead_clients, _rate_limited_total
     global _ws_active_connections
     global _tps_distribution, _api_call_latency_seconds
 
@@ -184,6 +185,11 @@ def _init_metrics() -> None:
     _ws_dead_clients = Counter(
         "ws_dead_clients_total",
         "Total dead WebSocket clients removed after send failure",
+        registry=REGISTRY,
+    )
+    _rate_limited_total = Counter(
+        "tps_api_rate_limited_total",
+        "Total requests rejected by API rate limiting",
         registry=REGISTRY,
     )
 
@@ -389,6 +395,13 @@ def increment_ws_dead_client() -> None:
     if not _PROMETHEUS_AVAILABLE or _ws_dead_clients is None:
         return
     _ws_dead_clients.inc()
+
+
+def increment_rate_limited() -> None:
+    """Increment the API rate-limited requests counter."""
+    if not _PROMETHEUS_AVAILABLE or _rate_limited_total is None:
+        return
+    _rate_limited_total.inc()
 
 
 def set_ws_active_connections(count: int) -> None:

@@ -9,13 +9,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
+from collections import deque
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set
+from math import ceil
+from typing import Any, Callable, Deque, Dict, List, Optional, Set
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -156,10 +160,98 @@ class TrendResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Rate limiting middleware
+# ---------------------------------------------------------------------------
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """In-process per-IP sliding-window rate limiter for HTTP endpoints."""
+
+    window_seconds = 60.0
+    exempt_paths = {"/api/v1/health"}
+
+    def __init__(
+        self,
+        app: Any,
+        *,
+        requests_per_minute: int,
+        burst_size: int,
+        time_fn: Callable[[], float] | None = None,
+    ) -> None:
+        super().__init__(app)
+        self.requests_per_minute = max(1, int(requests_per_minute))
+        self.burst_size = max(1, int(burst_size))
+        self.limit = self.requests_per_minute + self.burst_size
+        self._time_fn = time_fn or time.time
+        self._requests: Dict[str, Deque[float]] = {}
+        self._lock = threading.Lock()
+
+    async def dispatch(self, request: Request, call_next: Any) -> Response:
+        """Apply the rate limit before protected handlers run."""
+        if request.url.path in self.exempt_paths:
+            return await call_next(request)
+
+        client_host = request.client.host if request.client is not None else None
+        client_key = client_host or "unknown"
+        now = float(self._time_fn())
+
+        retry_after: int | None = None
+        with self._lock:
+            self._prune(now)
+            timestamps = self._requests.setdefault(client_key, deque())
+            self._prune_deque(timestamps, now)
+
+            if len(timestamps) >= self.limit:
+                oldest = timestamps[0]
+                retry_after = max(1, ceil((oldest + self.window_seconds) - now))
+            else:
+                timestamps.append(now)
+
+        if retry_after is not None:
+            logger.debug(
+                "Rate limit exceeded for client=%s retry_after=%s",
+                client_key,
+                retry_after,
+            )
+            try:
+                from prometheus_metrics import increment_rate_limited
+                increment_rate_limited()
+            except Exception:
+                pass
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Rate limit exceeded", "retry_after": retry_after},
+                headers={"Retry-After": str(retry_after)},
+            )
+
+        return await call_next(request)
+
+    def _prune(self, now: float) -> None:
+        """Remove stale timestamps and empty client entries."""
+        empty_clients = []
+        for client_key, timestamps in self._requests.items():
+            self._prune_deque(timestamps, now)
+            if not timestamps:
+                empty_clients.append(client_key)
+        for client_key in empty_clients:
+            self._requests.pop(client_key, None)
+
+    def _prune_deque(self, timestamps: Deque[float], now: float) -> None:
+        cutoff = now - self.window_seconds
+        while timestamps and timestamps[0] <= cutoff:
+            timestamps.popleft()
+
+
+# ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
 
-def create_app(store: Any, get_diagnostics: Any = None) -> FastAPI:
+def create_app(
+    store: Any,
+    get_diagnostics: Any = None,
+    *,
+    config: Any = None,
+    rate_limit_time_fn: Callable[[], float] | None = None,
+) -> FastAPI:
     """Build and return a configured FastAPI application.
 
     Args:
@@ -167,6 +259,8 @@ def create_app(store: Any, get_diagnostics: Any = None) -> FastAPI:
         get_diagnostics: Optional callable that returns in-memory state snapshot
             for the diagnostics endpoint. Signature: ``() -> dict`` returning
             ``{sessions: list, models: dict, providers: dict, max_sessions: int}``.
+        config: Optional TPSConfig override. Defaults to ``get_config()``.
+        rate_limit_time_fn: Optional monotonic-ish time source for deterministic tests.
     """
     app = FastAPI(
         title="TPS Counter API",
@@ -181,6 +275,16 @@ def create_app(store: Any, get_diagnostics: Any = None) -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+    )
+
+    if config is None:
+        from config import get_config
+        config = get_config()
+    app.add_middleware(
+        RateLimitMiddleware,
+        requests_per_minute=config.requests_per_minute,
+        burst_size=config.burst_size,
+        time_fn=rate_limit_time_fn,
     )
 
     # ConnectionManager instance for WebSocket broadcasting
