@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 # Current schema version — bump when altering tables
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS session_tps (
     session_id          TEXT PRIMARY KEY,
     call_count          INTEGER NOT NULL DEFAULT 0,
     total_output_tokens INTEGER NOT NULL DEFAULT 0,
+    total_input_tokens  INTEGER NOT NULL DEFAULT 0,
     total_duration      REAL    NOT NULL DEFAULT 0.0,
     peak_tps            REAL    NOT NULL DEFAULT 0.0,
     last_call_tps       REAL    NOT NULL DEFAULT 0.0,
@@ -37,20 +38,20 @@ CREATE TABLE IF NOT EXISTS session_tps (
 
 _UPSERT = """
 INSERT OR REPLACE INTO session_tps
-    (session_id, call_count, total_output_tokens, total_duration,
-     peak_tps, last_call_tps, avg_tps, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+    (session_id, call_count, total_output_tokens, total_input_tokens,
+     total_duration, peak_tps, last_call_tps, avg_tps, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
 """
 
 _LOAD_ONE = """
-SELECT session_id, call_count, total_output_tokens, total_duration,
-       peak_tps, last_call_tps, avg_tps, updated_at
+SELECT session_id, call_count, total_output_tokens, total_input_tokens,
+       total_duration, peak_tps, last_call_tps, avg_tps, updated_at
 FROM session_tps WHERE session_id = ?;
 """
 
 _LOAD_ALL = """
-SELECT session_id, call_count, total_output_tokens, total_duration,
-       peak_tps, last_call_tps, avg_tps, updated_at
+SELECT session_id, call_count, total_output_tokens, total_input_tokens,
+       total_duration, peak_tps, last_call_tps, avg_tps, updated_at
 FROM session_tps;
 """
 
@@ -105,9 +106,21 @@ class PersistentSessionStore:
             self._conn.execute("DELETE FROM schema_version")
             self._conn.execute(
                 "INSERT INTO schema_version (version) VALUES (?)",
+                (1,),
+            )
+        if current < 2:
+            # Add total_input_tokens column to existing tables
+            try:
+                self._conn.execute(
+                    "ALTER TABLE session_tps ADD COLUMN total_input_tokens INTEGER NOT NULL DEFAULT 0"
+                )
+            except Exception:
+                pass  # Column already exists
+            self._conn.execute("DELETE FROM schema_version")
+            self._conn.execute(
+                "INSERT INTO schema_version (version) VALUES (?)",
                 (_SCHEMA_VERSION,),
             )
-        # Future migrations: if current < 2: ALTER TABLE ...
 
     @staticmethod
     def _row_to_dict(row: tuple) -> Dict[str, Any]:
@@ -116,11 +129,12 @@ class PersistentSessionStore:
             "session_id": row[0],
             "call_count": row[1],
             "total_output_tokens": row[2],
-            "total_duration": row[3],
-            "peak_tps": row[4],
-            "last_call_tps": row[5],
-            "avg_tps": row[6],
-            "updated_at": row[7],
+            "total_input_tokens": row[3],
+            "total_duration": row[4],
+            "peak_tps": row[5],
+            "last_call_tps": row[6],
+            "avg_tps": row[7],
+            "updated_at": row[8],
         }
 
     @staticmethod
@@ -131,6 +145,7 @@ class PersistentSessionStore:
                 session_id,
                 state.get("call_count", 0),
                 state.get("total_output_tokens", 0),
+                state.get("total_input_tokens", 0),
                 state.get("total_duration", 0.0),
                 state.get("peak_tps", 0.0),
                 state.get("last_call_tps", 0.0),
@@ -142,6 +157,7 @@ class PersistentSessionStore:
             session_id,
             state.call_count,
             state.total_output_tokens,
+            state.total_input_tokens,
             state.total_duration,
             state.peak_tps,
             state.last_call_tps,

@@ -94,3 +94,15 @@ When switching models mid-session, per-model stats prevent cross-model pollution
 ## No Configuration Required
 
 Works out of the box. No env vars or config needed.
+
+## Supported Provider Usage Formats
+
+The plugin extracts token counts from multiple provider formats automatically:
+
+| Provider  | Output tokens key      | Input tokens key       |
+|-----------|------------------------|------------------------|
+| Anthropic | `usage.output_tokens`  | `usage.input_tokens`   |
+| OpenAI    | `usage.completion_tokens` | `usage.prompt_tokens` |
+| Google    | `usage.completionTokens` | `usage.promptTokens`  |
+
+Fallback order: primary key is tried first, then alternatives. Unknown formats return 0 without crashing.
