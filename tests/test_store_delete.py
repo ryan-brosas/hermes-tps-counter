@@ -256,3 +256,207 @@ class TestCleanupIntegration:
             assert store.count() == 0
         finally:
             store.close()
+
+
+# ------------------------------------------------------------------
+# TestDeleteCallEventsCleanup
+# ------------------------------------------------------------------
+
+
+class TestDeleteCallEventsCleanup:
+    """Test that delete() also removes call_events for the session."""
+
+    def _count_events(self, store, session_id):
+        """Helper: count call_events rows for a session_id."""
+        cur = store._conn.execute(
+            "SELECT COUNT(*) FROM call_events WHERE session_id = ?", (session_id,)
+        )
+        return cur.fetchone()[0]
+
+    def test_delete_removes_call_events(self, tmp_path):
+        """delete() removes all call_events for the given session_id."""
+        db = str(tmp_path / "test.db")
+        store = PersistentSessionStore(db)
+        try:
+            store.save("s1", _make_state())
+            store.save("s2", _make_state())
+
+            # Insert call_events for both sessions
+            store.record_event("s1", "model-a", "openai", 50, 100, 1.0, 100.0)
+            store.record_event("s1", "model-a", "openai", 60, 120, 1.1, 109.1)
+            store.record_event("s2", "model-b", "anthropic", 30, 80, 0.8, 100.0)
+
+            assert self._count_events(store, "s1") == 2
+            assert self._count_events(store, "s2") == 1
+
+            result = store.delete("s1")
+            assert result is True
+
+            # s1 events gone, s2 untouched
+            assert self._count_events(store, "s1") == 0
+            assert self._count_events(store, "s2") == 1
+        finally:
+            store.close()
+
+    def test_delete_no_events_for_session(self, tmp_path):
+        """delete() works fine when session has no call_events."""
+        db = str(tmp_path / "test.db")
+        store = PersistentSessionStore(db)
+        try:
+            store.save("s1", _make_state())
+            result = store.delete("s1")
+            assert result is True
+            assert self._count_events(store, "s1") == 0
+        finally:
+            store.close()
+
+    def test_delete_nonexistent_session_still_safe(self, tmp_path):
+        """delete() for nonexistent session doesn't affect other events."""
+        db = str(tmp_path / "test.db")
+        store = PersistentSessionStore(db)
+        try:
+            store.save("s1", _make_state())
+            store.record_event("s1", "m", "p", 10, 20, 0.5, 40.0)
+            result = store.delete("no-such")
+            assert result is False
+            assert self._count_events(store, "s1") == 1
+        finally:
+            store.close()
+
+
+# ------------------------------------------------------------------
+# TestDeleteExpiredOrphanedEvents
+# ------------------------------------------------------------------
+
+
+class TestDeleteExpiredOrphanedEvents:
+    """Test that delete_expired() cleans orphaned call_events."""
+
+    def _count_events(self, store, session_id=None):
+        """Helper: count call_events rows, optionally filtered by session_id."""
+        if session_id:
+            cur = store._conn.execute(
+                "SELECT COUNT(*) FROM call_events WHERE session_id = ?", (session_id,)
+            )
+        else:
+            cur = store._conn.execute("SELECT COUNT(*) FROM call_events")
+        return cur.fetchone()[0]
+
+    def test_delete_expired_removes_orphaned_events(self, tmp_path):
+        """Orphaned call_events are cleaned when their session is expired."""
+        db = str(tmp_path / "test.db")
+        store = PersistentSessionStore(db)
+        try:
+            store.save("s1", _make_state())
+            store.save("s2", _make_state())
+            store.save("s3", _make_state())
+
+            # Insert events for all sessions
+            store.record_event("s1", "m", "p", 10, 20, 0.5, 40.0)
+            store.record_event("s2", "m", "p", 15, 30, 0.6, 50.0)
+            store.record_event("s3", "m", "p", 20, 40, 0.7, 57.1)
+
+            # Back-date s1 and s2
+            old_time = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+            with store._lock:
+                store._conn.execute(
+                    "UPDATE session_tps SET updated_at = ? WHERE session_id IN (?, ?)",
+                    (old_time, "s1", "s2"),
+                )
+                store._conn.commit()
+
+            deleted = store.delete_expired(max_age_seconds=3600)
+            assert deleted == 2
+
+            # s1 and s2 events should be gone (orphaned), s3 intact
+            assert self._count_events(store, "s1") == 0
+            assert self._count_events(store, "s2") == 0
+            assert self._count_events(store, "s3") == 1
+        finally:
+            store.close()
+
+    def test_delete_expired_preserves_non_orphaned_events(self, tmp_path):
+        """Non-expired sessions' events are preserved."""
+        db = str(tmp_path / "test.db")
+        store = PersistentSessionStore(db)
+        try:
+            store.save("s1", _make_state())
+            store.record_event("s1", "m", "p", 10, 20, 0.5, 40.0)
+
+            deleted = store.delete_expired(max_age_seconds=3600)
+            assert deleted == 0
+            assert self._count_events(store, "s1") == 1
+        finally:
+            store.close()
+
+    def test_delete_expired_no_sessions_no_events(self, tmp_path):
+        """delete_expired on empty DB is safe."""
+        db = str(tmp_path / "test.db")
+        store = PersistentSessionStore(db)
+        try:
+            deleted = store.delete_expired(max_age_seconds=3600)
+            assert deleted == 0
+        finally:
+            store.close()
+
+
+# ------------------------------------------------------------------
+# TestEvictionDbCleanup
+# ------------------------------------------------------------------
+
+
+class TestEvictionDbCleanup:
+    """Test that _evict_if_needed() removes evicted session from DB."""
+
+    def test_evict_removes_from_db(self, tmp_path):
+        """Evicted session is removed from persistent store (session + events)."""
+        import __init__ as plugin
+        from __init__ import (
+            _evict_if_needed, _get_session, _SESSIONS, _STATE_LOCK,
+            _persist_state, _SessionTPS,
+        )
+
+        db_path = str(tmp_path / "tps.db")
+        with _STATE_LOCK:
+            _SESSIONS.clear()
+        plugin._STORE = None
+
+        mock_ctx = MagicMock()
+        mock_ctx.get_config.return_value = {"db_path": db_path}
+        mock_ctx.config = {}
+        plugin.register(mock_ctx)
+        assert plugin._STORE is not None
+
+        try:
+            # Create max_sessions + 1 sessions with call_events
+            from __init__ import MAX_SESSIONS
+            for i in range(MAX_SESSIONS + 1):
+                sid = f"session-{i}"
+                s = _SessionTPS()
+                s.record(output_tokens=100 * (i + 1), duration=1.0, input_tokens=50 * (i + 1))
+                with _STATE_LOCK:
+                    _SESSIONS[sid] = s
+                _persist_state(sid, s)
+                plugin._STORE.record_event(sid, "model", "provider", 50, 100, 1.0, 100.0)
+
+            # Pre-check: oldest session exists in DB
+            assert plugin._STORE.load("session-0") is not None
+
+            _evict_if_needed()
+
+            # Evicted session removed from memory
+            with _STATE_LOCK:
+                assert "session-0" not in _SESSIONS
+                assert len(_SESSIONS) == MAX_SESSIONS
+
+            # Evicted session removed from DB (session_tps + call_events)
+            assert plugin._STORE.load("session-0") is None
+            cur = plugin._STORE._conn.execute(
+                "SELECT COUNT(*) FROM call_events WHERE session_id = 'session-0'"
+            )
+            assert cur.fetchone()[0] == 0
+        finally:
+            with _STATE_LOCK:
+                _SESSIONS.clear()
+            plugin._STORE.close()
+            plugin._STORE = None
