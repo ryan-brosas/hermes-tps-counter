@@ -1,0 +1,33 @@
+{
+  "id": "her-test-suite-l0o",
+  "title": "Add comprehensive pytest test suite for tps-counter plugin",
+  "type": "task",
+  "priority": 1,
+  "status": "open",
+  "slug": "test-suite",
+  "labels": ["testing", "quality"],
+  "created_at": "2026-06-15T18:18:50Z",
+  "created_by": "prometheus",
+  "goal": "Comprehensive pytest test suite covering all tps-counter plugin functionality",
+  "success_criteria": [
+    "pytest runs green with 0 failures",
+    "All _SessionTPS methods tested",
+    "Hook callback tested with valid/partial/missing kwargs",
+    "Thread safety verified with concurrent calls",
+    "Edge cases covered",
+    "get_tps_stats and register tested"
+  ],
+  "affected_files": [
+    "tests/__init__.py",
+    "tests/test_session_tps.py",
+    "tests/test_hook.py",
+    "tests/test_api.py",
+    "tests/test_thread_safety.py",
+    "pyproject.toml"
+  ],
+  "non_goals": [
+    "Hermes core integration testing",
+    "Plugin loader testing",
+    "Performance benchmarks"
+  ]
+}
