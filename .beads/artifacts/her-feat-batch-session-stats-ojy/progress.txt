@@ -1,0 +1,11 @@
+# Progress: her-feat-batch-session-stats-ojy
+
+## Status: COMPLETED
+
+## Tasks
+- [x] 1.1 Verify existing tests pass (28 passed)
+- [x] 2.1 Add Pydantic request/response models (BatchSessionTPSRequest, BatchSessionTPSResponse)
+- [x] 2.2 Implement batch endpoint (POST /api/v1/sessions/batch/tps)
+- [x] 3.1 Write batch endpoint tests (9 tests, all pass)
+- [x] 4.1 Update README documentation (endpoint table + examples)
+- [x] 5.1 Full verification (37/37 tests pass, no regression)

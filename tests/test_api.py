@@ -477,3 +477,123 @@ class TestHealthDiagnosticsEndpoint:
         assert memory["max_sessions"] == 100
         assert memory["models"] == 2
         assert memory["providers"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Batch session TPS endpoint
+# ---------------------------------------------------------------------------
+
+class TestBatchSessionTPSEndpoint:
+
+    def _save_two_sessions(self, store):
+        """Insert two test sessions into the store."""
+        store.save("batch-s1", {
+            "call_count": 3, "total_output_tokens": 300,
+            "total_input_tokens": 150, "total_duration": 6.0,
+            "peak_tps": 60.0, "last_call_tps": 55.0, "avg_tps": 50.0,
+        })
+        store.save("batch-s2", {
+            "call_count": 7, "total_output_tokens": 700,
+            "total_input_tokens": 350, "total_duration": 14.0,
+            "peak_tps": 80.0, "last_call_tps": 70.0, "avg_tps": 50.0,
+        })
+
+    def test_batch_full_hit(self, client, store):
+        """All requested sessions are found."""
+        self._save_two_sessions(store)
+        resp = client.post("/api/v1/sessions/batch/tps",
+                           json={"session_ids": ["batch-s1", "batch-s2"]})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["sessions"]) == 2
+        assert data["missing_session_ids"] == []
+        ids = {s["session_id"] for s in data["sessions"]}
+        assert ids == {"batch-s1", "batch-s2"}
+
+    def test_batch_partial_miss(self, client, store):
+        """Mix of existing and non-existing IDs."""
+        self._save_two_sessions(store)
+        resp = client.post("/api/v1/sessions/batch/tps",
+                           json={"session_ids": ["batch-s1", "ghost"]})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["sessions"]) == 1
+        assert data["sessions"][0]["session_id"] == "batch-s1"
+        assert data["missing_session_ids"] == ["ghost"]
+
+    def test_batch_all_miss(self, client):
+        """No requested sessions exist."""
+        resp = client.post("/api/v1/sessions/batch/tps",
+                           json={"session_ids": ["nope-a", "nope-b"]})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["sessions"] == []
+        assert sorted(data["missing_session_ids"]) == ["nope-a", "nope-b"]
+
+    def test_batch_duplicate_ids(self, client, store):
+        """Duplicate IDs must not produce duplicate response rows."""
+        store.save("dup-s", {
+            "call_count": 1, "total_output_tokens": 100,
+            "total_input_tokens": 50, "total_duration": 2.0,
+            "peak_tps": 50.0, "last_call_tps": 50.0, "avg_tps": 50.0,
+        })
+        resp = client.post("/api/v1/sessions/batch/tps",
+                           json={"session_ids": ["dup-s", "dup-s", "dup-s"]})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["sessions"]) == 1
+        assert data["sessions"][0]["session_id"] == "dup-s"
+        assert data["missing_session_ids"] == []
+
+    def test_batch_empty_input_rejected(self, client):
+        """Empty session_ids list must be rejected (422)."""
+        resp = client.post("/api/v1/sessions/batch/tps",
+                           json={"session_ids": []})
+        assert resp.status_code == 422
+
+    def test_batch_invalid_input_rejected(self, client):
+        """Non-list session_ids must be rejected (422)."""
+        resp = client.post("/api/v1/sessions/batch/tps",
+                           json={"session_ids": "not-a-list"})
+        assert resp.status_code == 422
+
+    def test_batch_503_when_store_none(self):
+        """Batch endpoint returns 503 when store is None."""
+        from api import create_app
+        from fastapi.testclient import TestClient
+        app = create_app(None)
+        c = TestClient(app)
+        resp = c.post("/api/v1/sessions/batch/tps",
+                      json={"session_ids": ["any"]})
+        assert resp.status_code == 503
+
+    def test_batch_preserves_first_seen_order(self, client, store):
+        """Response order matches first-seen order of unique IDs."""
+        for sid in ["order-a", "order-b", "order-c"]:
+            store.save(sid, {
+                "call_count": 1, "total_output_tokens": 10,
+                "total_input_tokens": 5, "total_duration": 0.1,
+                "peak_tps": 100.0, "last_call_tps": 100.0, "avg_tps": 100.0,
+            })
+        resp = client.post("/api/v1/sessions/batch/tps",
+                           json={"session_ids": ["order-c", "order-a", "order-b"]})
+        assert resp.status_code == 200
+        data = resp.json()
+        returned_ids = [s["session_id"] for s in data["sessions"]]
+        assert returned_ids == ["order-c", "order-a", "order-b"]
+
+    def test_batch_response_uses_session_tps_fields(self, client, store):
+        """Batch response entries have the same fields as single-session response."""
+        store.save("field-check", {
+            "call_count": 2, "total_output_tokens": 200,
+            "total_input_tokens": 100, "total_duration": 4.0,
+            "peak_tps": 60.0, "last_call_tps": 50.0, "avg_tps": 50.0,
+        })
+        resp = client.post("/api/v1/sessions/batch/tps",
+                           json={"session_ids": ["field-check"]})
+        assert resp.status_code == 200
+        session = resp.json()["sessions"][0]
+        expected_fields = {"session_id", "call_count", "total_output_tokens",
+                           "total_input_tokens", "total_duration", "peak_tps",
+                           "last_call_tps", "avg_tps", "updated_at"}
+        assert set(session.keys()) == expected_fields
