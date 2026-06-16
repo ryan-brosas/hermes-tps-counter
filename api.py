@@ -41,11 +41,21 @@ class ConnectionManager:
         await ws.accept()
         with self._lock:
             self._clients.add(ws)
+        try:
+            from prometheus_metrics import set_ws_active_connections
+            set_ws_active_connections(self.count)
+        except Exception:
+            pass
 
     def disconnect(self, ws: WebSocket) -> None:
         """Remove a WebSocket from the client set (idempotent)."""
         with self._lock:
             self._clients.discard(ws)
+        try:
+            from prometheus_metrics import set_ws_active_connections
+            set_ws_active_connections(self.count)
+        except Exception:
+            pass
 
     @property
     def count(self) -> int:
@@ -72,6 +82,12 @@ class ConnectionManager:
         try:
             await ws.send_json(message)
         except (WebSocketDisconnect, ConnectionError, RuntimeError):
+            try:
+                from prometheus_metrics import increment_ws_broadcast_failure, increment_ws_dead_client
+                increment_ws_broadcast_failure()
+                increment_ws_dead_client()
+            except Exception:
+                pass
             self.disconnect(ws)
 
 

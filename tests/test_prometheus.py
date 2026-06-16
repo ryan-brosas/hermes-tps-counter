@@ -429,3 +429,143 @@ class TestHookIntegration:
             assert "disabled_sess" not in output
         finally:
             plugin._prometheus_enabled = old
+
+
+# ---------------------------------------------------------------------------
+# TestHealthMetricDefinitions — new health metrics registered in REGISTRY
+# ---------------------------------------------------------------------------
+
+class TestHealthMetricDefinitions:
+    """Verify all 6 new health metrics are registered in the custom registry."""
+
+    def test_health_counters_registered(self):
+        from prometheus_metrics import REGISTRY
+        names = {m.name for m in REGISTRY.collect()}
+        # prometheus_client strips _total suffix from collected counter names
+        assert "usage_extraction_failures" in names
+        assert "db_write_errors" in names
+        assert "db_read_errors" in names
+        assert "ws_broadcast_failures" in names
+        assert "ws_dead_clients" in names
+
+    def test_ws_active_connections_gauge_registered(self):
+        from prometheus_metrics import REGISTRY
+        names = {m.name for m in REGISTRY.collect()}
+        assert "ws_active_connections" in names
+
+    def test_all_six_metrics_in_generate_output(self):
+        """All 6 new metrics appear in generate_metrics() output with HELP/TYPE."""
+        from prometheus_metrics import generate_metrics
+        output = generate_metrics().decode()
+        for name in [
+            "usage_extraction_failures_total",
+            "db_write_errors_total",
+            "db_read_errors_total",
+            "ws_broadcast_failures_total",
+            "ws_dead_clients_total",
+            "ws_active_connections",
+        ]:
+            assert name in output, f"{name} missing from /metrics output"
+            # HELP and TYPE lines should be present for each
+            assert f"# HELP {name}" in output, f"# HELP {name} missing"
+            assert f"# TYPE {name}" in output, f"# TYPE {name} missing"
+
+
+# ---------------------------------------------------------------------------
+# TestHealthMetricIncrements — counter/gauge increment behavior
+# ---------------------------------------------------------------------------
+
+class TestHealthMetricIncrements:
+    """Verify each increment/set function correctly updates its metric."""
+
+    def test_usage_extraction_failure_increments(self):
+        from prometheus_metrics import (
+            increment_usage_extraction_failure, generate_metrics,
+        )
+        increment_usage_extraction_failure()
+        output = generate_metrics().decode()
+        assert "usage_extraction_failures_total 1.0" in output
+
+    def test_db_write_error_increments(self):
+        from prometheus_metrics import (
+            increment_db_write_error, generate_metrics,
+        )
+        increment_db_write_error()
+        output = generate_metrics().decode()
+        assert "db_write_errors_total 1.0" in output
+
+    def test_db_read_error_increments(self):
+        from prometheus_metrics import (
+            increment_db_read_error, generate_metrics,
+        )
+        increment_db_read_error()
+        output = generate_metrics().decode()
+        assert "db_read_errors_total 1.0" in output
+
+    def test_ws_broadcast_failure_increments(self):
+        from prometheus_metrics import (
+            increment_ws_broadcast_failure, generate_metrics,
+        )
+        increment_ws_broadcast_failure()
+        output = generate_metrics().decode()
+        assert "ws_broadcast_failures_total 1.0" in output
+
+    def test_ws_dead_client_increments(self):
+        from prometheus_metrics import (
+            increment_ws_dead_client, generate_metrics,
+        )
+        increment_ws_dead_client()
+        output = generate_metrics().decode()
+        assert "ws_dead_clients_total 1.0" in output
+
+    def test_ws_active_connections_set(self):
+        from prometheus_metrics import (
+            set_ws_active_connections, generate_metrics,
+        )
+        set_ws_active_connections(5)
+        output = generate_metrics().decode()
+        assert "ws_active_connections 5.0" in output
+
+    def test_multiple_increments_accumulate(self):
+        """Counters should accumulate across multiple calls."""
+        from prometheus_metrics import (
+            increment_db_write_error, generate_metrics,
+        )
+        increment_db_write_error()
+        increment_db_write_error()
+        increment_db_write_error()
+        output = generate_metrics().decode()
+        assert "db_write_errors_total 3.0" in output
+
+    def test_gauge_overwrites_on_set(self):
+        """Gauge should reflect the latest set() value, not accumulate."""
+        from prometheus_metrics import (
+            set_ws_active_connections, generate_metrics,
+        )
+        set_ws_active_connections(10)
+        set_ws_active_connections(3)
+        output = generate_metrics().decode()
+        assert "ws_active_connections 3.0" in output
+
+
+# ---------------------------------------------------------------------------
+# TestHealthMetricDegradation — no-ops when prometheus_client unavailable
+# ---------------------------------------------------------------------------
+
+class TestHealthMetricDegradation:
+    """Verify all increment/set functions are safe no-ops when prometheus_client absent."""
+
+    def test_increment_functions_noop_without_prometheus(self):
+        import prometheus_metrics as pm
+        old = pm._PROMETHEUS_AVAILABLE
+        pm._PROMETHEUS_AVAILABLE = False
+        try:
+            # None of these should raise
+            pm.increment_usage_extraction_failure()
+            pm.increment_db_write_error()
+            pm.increment_db_read_error()
+            pm.increment_ws_broadcast_failure()
+            pm.increment_ws_dead_client()
+            pm.set_ws_active_connections(0)
+        finally:
+            pm._PROMETHEUS_AVAILABLE = old

@@ -45,6 +45,16 @@ _tps_model_peak: Any = None
 _tps_provider_avg: Any = None
 _tps_provider_peak: Any = None
 
+# Operational health counters
+_usage_extraction_failures: Any = None
+_db_write_errors: Any = None
+_db_read_errors: Any = None
+_ws_broadcast_failures: Any = None
+_ws_dead_clients: Any = None
+
+# Operational health gauges
+_ws_active_connections: Any = None
+
 
 def _init_metrics() -> None:
     """Create all metric objects inside the custom registry."""
@@ -53,6 +63,9 @@ def _init_metrics() -> None:
     global _tps_tokens_total, _tps_api_calls_total
     global _tps_model_avg, _tps_model_peak
     global _tps_provider_avg, _tps_provider_peak
+    global _usage_extraction_failures, _db_write_errors, _db_read_errors
+    global _ws_broadcast_failures, _ws_dead_clients
+    global _ws_active_connections
 
     if not _PROMETHEUS_AVAILABLE:
         return
@@ -118,6 +131,40 @@ def _init_metrics() -> None:
         "tps_provider_peak",
         "Peak tokens per second for a specific provider within a session",
         ["session_id", "provider"],
+        registry=REGISTRY,
+    )
+
+    # Operational health counters
+    _usage_extraction_failures = Counter(
+        "usage_extraction_failures_total",
+        "Total usage extraction failures (non-empty input yielded zero tokens)",
+        registry=REGISTRY,
+    )
+    _db_write_errors = Counter(
+        "db_write_errors_total",
+        "Total database write errors during state persistence",
+        registry=REGISTRY,
+    )
+    _db_read_errors = Counter(
+        "db_read_errors_total",
+        "Total database read errors during state hydration",
+        registry=REGISTRY,
+    )
+    _ws_broadcast_failures = Counter(
+        "ws_broadcast_failures_total",
+        "Total WebSocket broadcast failures (individual client send errors)",
+        registry=REGISTRY,
+    )
+    _ws_dead_clients = Counter(
+        "ws_dead_clients_total",
+        "Total dead WebSocket clients removed after send failure",
+        registry=REGISTRY,
+    )
+
+    # Operational health gauges
+    _ws_active_connections = Gauge(
+        "ws_active_connections",
+        "Number of currently active WebSocket connections",
         registry=REGISTRY,
     )
 
@@ -211,6 +258,71 @@ def generate_metrics() -> bytes:
 def metrics_available() -> bool:
     """Check whether prometheus_client is installed and metrics are ready."""
     return _PROMETHEUS_AVAILABLE and REGISTRY is not None
+
+
+# ---------------------------------------------------------------------------
+# Health metric increment functions (event-driven, not state-synced)
+# ---------------------------------------------------------------------------
+
+def increment_usage_extraction_failure() -> None:
+    """Increment the usage extraction failure counter.
+
+    Called when _extract_usage returns (0, 0) for a non-empty input dict.
+    Thread-safe — prometheus_client Counter.inc() is internally thread-safe.
+    """
+    if not _PROMETHEUS_AVAILABLE or _usage_extraction_failures is None:
+        return
+    _usage_extraction_failures.inc()
+
+
+def increment_db_write_error() -> None:
+    """Increment the DB write error counter.
+
+    Called when _persist_state catches an exception.
+    """
+    if not _PROMETHEUS_AVAILABLE or _db_write_errors is None:
+        return
+    _db_write_errors.inc()
+
+
+def increment_db_read_error() -> None:
+    """Increment the DB read error counter.
+
+    Called when _hydrate_from_db catches an exception.
+    """
+    if not _PROMETHEUS_AVAILABLE or _db_read_errors is None:
+        return
+    _db_read_errors.inc()
+
+
+def increment_ws_broadcast_failure() -> None:
+    """Increment the WebSocket broadcast failure counter.
+
+    Called per failed client in ConnectionManager._safe_send.
+    """
+    if not _PROMETHEUS_AVAILABLE or _ws_broadcast_failures is None:
+        return
+    _ws_broadcast_failures.inc()
+
+
+def increment_ws_dead_client() -> None:
+    """Increment the dead WebSocket client counter.
+
+    Called when a dead client is removed in ConnectionManager._safe_send.
+    """
+    if not _PROMETHEUS_AVAILABLE or _ws_dead_clients is None:
+        return
+    _ws_dead_clients.inc()
+
+
+def set_ws_active_connections(count: int) -> None:
+    """Set the active WebSocket connections gauge.
+
+    Called after connect/disconnect in ConnectionManager.
+    """
+    if not _PROMETHEUS_AVAILABLE or _ws_active_connections is None:
+        return
+    _ws_active_connections.set(count)
 
 
 def reset_metrics() -> None:

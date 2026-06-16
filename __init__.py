@@ -287,6 +287,11 @@ def _hydrate_from_db(session_id: str) -> Optional[_SessionTPS]:
         return s
     except Exception as exc:
         logger.warning("tps-counter: DB read failed, disabling store: %s", exc)
+        try:
+            from prometheus_metrics import increment_db_read_error
+            increment_db_read_error()
+        except Exception:
+            pass
         return None
 
 
@@ -298,6 +303,11 @@ def _persist_state(session_id: str, state: _SessionTPS) -> None:
         _STORE.save(session_id, state)
     except Exception as exc:
         logger.warning("tps-counter: DB write failed, disabling store: %s", exc)
+        try:
+            from prometheus_metrics import increment_db_write_error
+            increment_db_write_error()
+        except Exception:
+            pass
 
 
 def _get_session(session_id: str) -> _SessionTPS:
@@ -336,6 +346,14 @@ def _on_post_api_request(**kwargs: Any) -> None:
     usage = kwargs.get("usage", {})
     input_tokens, output_tokens = _extract_usage(usage)
     duration = kwargs.get("api_duration", 0.0) or 0.0
+
+    # Track extraction failures: non-empty usage dict but zero tokens extracted
+    if usage and isinstance(usage, dict) and input_tokens == 0 and output_tokens == 0:
+        try:
+            from prometheus_metrics import increment_usage_extraction_failure
+            increment_usage_extraction_failure()
+        except Exception:
+            pass
 
     if output_tokens <= 0 or duration <= 0:
         return
