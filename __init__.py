@@ -16,6 +16,57 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# Ordered fallback key paths for usage extraction
+_OUTPUT_TOKEN_KEYS = ("output_tokens", "completion_tokens", "completionTokens")
+_INPUT_TOKEN_KEYS = ("input_tokens", "prompt_tokens", "promptTokens")
+
+
+def _extract_usage(usage_dict: Any) -> tuple[int, int]:
+    """Extract (input_tokens, output_tokens) from a usage dict.
+
+    Tries multiple key paths to support different LLM providers:
+    - Anthropic: usage.output_tokens, usage.input_tokens
+    - OpenAI: usage.completion_tokens, usage.prompt_tokens
+    - Google/other: usage.completionTokens, usage.promptTokens
+
+    Returns (0, 0) for missing or invalid input.
+    """
+    if not isinstance(usage_dict, dict):
+        return (0, 0)
+
+    # Output tokens — try primary, then fallbacks
+    output_tokens = 0
+    for key in _OUTPUT_TOKEN_KEYS:
+        val = usage_dict.get(key)
+        if val is not None:
+            try:
+                output_tokens = int(val)
+                if key != _OUTPUT_TOKEN_KEYS[0]:
+                    logger.debug(
+                        "tps-counter: used fallback key %r for output_tokens", key
+                    )
+                break
+            except (TypeError, ValueError):
+                continue
+
+    # Input tokens — try primary, then fallbacks
+    input_tokens = 0
+    for key in _INPUT_TOKEN_KEYS:
+        val = usage_dict.get(key)
+        if val is not None:
+            try:
+                input_tokens = int(val)
+                if key != _INPUT_TOKEN_KEYS[0]:
+                    logger.debug(
+                        "tps-counter: used fallback key %r for input_tokens", key
+                    )
+                break
+            except (TypeError, ValueError):
+                continue
+
+    return (input_tokens, max(output_tokens, 0))
+
+
 # Per-session TPS state, keyed by session_id
 _STATE_LOCK = threading.Lock()
 _SESSIONS: Dict[str, "_SessionTPS"] = {}
@@ -31,9 +82,11 @@ class _SessionTPS:
     __slots__ = (
         "call_count",
         "total_output_tokens",
+        "total_input_tokens",
         "total_duration",
         "last_call_tps",
         "last_call_output_tokens",
+        "last_call_input_tokens",
         "last_call_duration",
         "peak_tps",
         "turn_start_tokens",
@@ -43,19 +96,23 @@ class _SessionTPS:
     def __init__(self) -> None:
         self.call_count: int = 0
         self.total_output_tokens: int = 0
+        self.total_input_tokens: int = 0
         self.total_duration: float = 0.0
         self.last_call_tps: float = 0.0
         self.last_call_output_tokens: int = 0
+        self.last_call_input_tokens: int = 0
         self.last_call_duration: float = 0.0
         self.peak_tps: float = 0.0
         self.turn_start_tokens: int = 0
         self.turn_start_time: float = time.time()
 
-    def record(self, output_tokens: int, duration: float) -> None:
+    def record(self, output_tokens: int, duration: float, input_tokens: int = 0) -> None:
         self.call_count += 1
         self.total_output_tokens += output_tokens
+        self.total_input_tokens += input_tokens
         self.total_duration += duration
         self.last_call_output_tokens = output_tokens
+        self.last_call_input_tokens = input_tokens
         self.last_call_duration = duration
         if duration > 0:
             self.last_call_tps = output_tokens / duration
@@ -92,6 +149,8 @@ class _SessionTPS:
             parts.append(f"peak {self.peak_tps:.1f}")
         if self.total_output_tokens > 0:
             parts.append(f"out {self._fmt_tokens(self.total_output_tokens)}")
+        if self.total_input_tokens > 0:
+            parts.append(f"in {self._fmt_tokens(self.total_input_tokens)}")
         return " │ ".join(parts) if parts else ""
 
     @staticmethod
@@ -146,10 +205,12 @@ def _hydrate_from_db(session_id: str) -> Optional[_SessionTPS]:
         s = _SessionTPS()
         s.call_count = data["call_count"]
         s.total_output_tokens = data["total_output_tokens"]
+        s.total_input_tokens = data.get("total_input_tokens", 0)
         s.total_duration = data["total_duration"]
         s.peak_tps = data["peak_tps"]
         s.last_call_tps = data["last_call_tps"]
         s.last_call_output_tokens = 0
+        s.last_call_input_tokens = 0
         s.last_call_duration = 0.0
         return s
     except Exception as exc:
@@ -192,7 +253,7 @@ def _on_post_api_request(**kwargs: Any) -> None:
         return
 
     usage = kwargs.get("usage", {})
-    output_tokens = usage.get("output_tokens", 0) if isinstance(usage, dict) else 0
+    input_tokens, output_tokens = _extract_usage(usage)
     duration = kwargs.get("api_duration", 0.0) or 0.0
 
     if output_tokens <= 0 or duration <= 0:
@@ -201,7 +262,7 @@ def _on_post_api_request(**kwargs: Any) -> None:
     state = _get_session(session_id)
     model = kwargs.get("model", "") or ""
     with _STATE_LOCK:
-        state.record(output_tokens, duration)
+        state.record(output_tokens, duration, input_tokens)
         # Write-through to SQLite
         _persist_state(session_id, state)
         # Per-model tracking
@@ -221,6 +282,7 @@ def _on_post_api_request(**kwargs: Any) -> None:
                     "avg_tps": state.avg_tps,
                     "peak_tps": state.peak_tps,
                     "output_tokens": state.total_output_tokens,
+                    "input_tokens": state.total_input_tokens,
                 }
                 # Include per-model breakdown if available
                 with _STATE_LOCK:
@@ -293,6 +355,7 @@ def get_tps_stats(session_id: str) -> Dict[str, Any]:
         "last_tps": round(state.last_call_tps, 1),
         "peak_tps": round(state.peak_tps, 1),
         "total_output_tokens": state.total_output_tokens,
+        "total_input_tokens": state.total_input_tokens,
         "total_duration": round(state.total_duration, 2),
     }
 
