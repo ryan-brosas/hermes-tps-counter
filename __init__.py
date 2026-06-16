@@ -71,6 +71,7 @@ def _extract_usage(usage_dict: Any) -> tuple[int, int]:
 _STATE_LOCK = threading.Lock()
 _SESSIONS: Dict[str, "_SessionTPS"] = {}
 _MODELS: Dict[str, Dict[str, "_ModelTPS"]] = {}  # session_id → model_name → _ModelTPS
+_PROVIDERS: Dict[str, Dict[str, "_ProviderTPS"]] = {}  # session_id → provider → _ProviderTPS
 
 # Persistent store (set during register, may remain None on failure)
 _STORE: Optional[Any] = None  # PersistentSessionStore | None
@@ -90,6 +91,7 @@ class _SessionTPS:
         "last_call_duration",
         "peak_tps",
         "turn_start_tokens",
+        "turn_start_input_tokens",
         "turn_start_time",
     )
 
@@ -104,6 +106,7 @@ class _SessionTPS:
         self.last_call_duration: float = 0.0
         self.peak_tps: float = 0.0
         self.turn_start_tokens: int = 0
+        self.turn_start_input_tokens: int = 0
         self.turn_start_time: float = time.time()
 
     def record(self, output_tokens: int, duration: float, input_tokens: int = 0) -> None:
@@ -118,6 +121,11 @@ class _SessionTPS:
             self.last_call_tps = output_tokens / duration
             if self.last_call_tps > self.peak_tps:
                 self.peak_tps = self.last_call_tps
+
+    @property
+    def total_tokens(self) -> int:
+        """Total tokens processed (input + output)."""
+        return self.total_input_tokens + self.total_output_tokens
 
     @property
     def avg_tps(self) -> float:
@@ -136,6 +144,7 @@ class _SessionTPS:
 
     def reset_turn(self) -> None:
         self.turn_start_tokens = self.total_output_tokens
+        self.turn_start_input_tokens = self.total_input_tokens
         self.turn_start_time = time.time()
 
     def summary_line(self) -> str:
@@ -147,6 +156,8 @@ class _SessionTPS:
             parts.append(f"avg {self.avg_tps:.1f}")
         if self.peak_tps > 0:
             parts.append(f"peak {self.peak_tps:.1f}")
+        if self.total_tokens > 0:
+            parts.append(f"total {self._fmt_tokens(self.total_tokens)}")
         if self.total_output_tokens > 0:
             parts.append(f"out {self._fmt_tokens(self.total_output_tokens)}")
         if self.total_input_tokens > 0:
@@ -160,6 +171,52 @@ class _SessionTPS:
         if n >= 1_000:
             return f"{n / 1_000:.1f}K"
         return str(n)
+
+
+def _extract_provider(model: str) -> str:
+    """Extract provider name from a LiteLLM-style model string.
+
+    Examples:
+        'openai/gpt-4o' → 'openai'
+        'anthropic/claude-sonnet-4' → 'anthropic'
+        'gpt-4' → 'default'
+        '' → 'default'
+    """
+    if not model or "/" not in model:
+        return "default"
+    return model.split("/", 1)[0]
+
+
+class _ProviderTPS:
+    """Tracks aggregate TPS metrics for a provider within a session."""
+
+    __slots__ = (
+        "call_count",
+        "total_output_tokens",
+        "total_duration",
+        "peak_tps",
+    )
+
+    def __init__(self) -> None:
+        self.call_count: int = 0
+        self.total_output_tokens: int = 0
+        self.total_duration: float = 0.0
+        self.peak_tps: float = 0.0
+
+    def record(self, output_tokens: int, duration: float) -> None:
+        self.call_count += 1
+        self.total_output_tokens += output_tokens
+        self.total_duration += duration
+        if duration > 0:
+            tps = output_tokens / duration
+            if tps > self.peak_tps:
+                self.peak_tps = tps
+
+    @property
+    def avg_tps(self) -> float:
+        if self.total_duration > 0:
+            return self.total_output_tokens / self.total_duration
+        return 0.0
 
 
 class _ModelTPS:
@@ -246,6 +303,15 @@ def _get_model(session_id: str, model: str) -> _ModelTPS:
     return _MODELS[session_id][model]
 
 
+def _get_provider(session_id: str, provider: str) -> _ProviderTPS:
+    """Get or create a _ProviderTPS for a session+provider pair. Caller must hold _STATE_LOCK."""
+    if session_id not in _PROVIDERS:
+        _PROVIDERS[session_id] = {}
+    if provider not in _PROVIDERS[session_id]:
+        _PROVIDERS[session_id][provider] = _ProviderTPS()
+    return _PROVIDERS[session_id][provider]
+
+
 def _on_post_api_request(**kwargs: Any) -> None:
     """Hook callback: record TPS after each LLM API call."""
     session_id = kwargs.get("session_id", "")
@@ -269,6 +335,10 @@ def _on_post_api_request(**kwargs: Any) -> None:
         if model:
             model_state = _get_model(session_id, model)
             model_state.record(output_tokens, duration)
+        # Per-provider tracking
+        provider = _extract_provider(model)
+        provider_state = _get_provider(session_id, provider)
+        provider_state.record(output_tokens, duration)
 
     # Expose TPS snapshot for status bar integration
     try:
@@ -283,6 +353,7 @@ def _on_post_api_request(**kwargs: Any) -> None:
                     "peak_tps": state.peak_tps,
                     "output_tokens": state.total_output_tokens,
                     "input_tokens": state.total_input_tokens,
+                    "total_tokens": state.total_tokens,
                 }
                 # Include per-model breakdown if available
                 with _STATE_LOCK:
@@ -296,6 +367,19 @@ def _on_post_api_request(**kwargs: Any) -> None:
                                 "total_output_tokens": ms.total_output_tokens,
                             }
                             for m, ms in session_models.items()
+                        }
+                    # Include per-provider breakdown if available
+                    session_providers = _PROVIDERS.get(session_id, {})
+                    if session_providers:
+                        snapshot["providers"] = {
+                            p: {
+                                "avg_tps": ps.avg_tps,
+                                "peak_tps": ps.peak_tps,
+                                "calls": ps.call_count,
+                                "total_output_tokens": ps.total_output_tokens,
+                                "total_duration": ps.total_duration,
+                            }
+                            for p, ps in session_providers.items()
                         }
                 agent._tps_snapshot = snapshot
     except Exception as exc:
@@ -348,7 +432,7 @@ def get_tps_stats(session_id: str) -> Dict[str, Any]:
     with _STATE_LOCK:
         state = _SESSIONS.get(session_id)
     if state is None:
-        return {"calls": 0, "avg_tps": 0, "last_tps": 0, "peak_tps": 0, "total_output_tokens": 0}
+        return {"calls": 0, "avg_tps": 0, "last_tps": 0, "peak_tps": 0, "total_output_tokens": 0, "total_input_tokens": 0, "total_tokens": 0}
     return {
         "calls": state.call_count,
         "avg_tps": round(state.avg_tps, 1),
@@ -356,6 +440,7 @@ def get_tps_stats(session_id: str) -> Dict[str, Any]:
         "peak_tps": round(state.peak_tps, 1),
         "total_output_tokens": state.total_output_tokens,
         "total_input_tokens": state.total_input_tokens,
+        "total_tokens": state.total_tokens,
         "total_duration": round(state.total_duration, 2),
     }
 
@@ -380,8 +465,29 @@ def get_model_stats(session_id: str) -> Dict[str, Dict[str, Any]]:
         }
 
 
+def get_provider_stats(session_id: str) -> Dict[str, Dict[str, Any]]:
+    """Return per-provider TPS stats for a session.
+
+    Returns:
+        Dict mapping provider_name → {avg_tps, peak_tps, calls, total_output_tokens, total_duration}
+    """
+    with _STATE_LOCK:
+        session_providers = _PROVIDERS.get(session_id, {})
+        return {
+            provider: {
+                "avg_tps": round(ps.avg_tps, 1),
+                "peak_tps": round(ps.peak_tps, 1),
+                "calls": ps.call_count,
+                "total_output_tokens": ps.total_output_tokens,
+                "total_duration": round(ps.total_duration, 2),
+            }
+            for provider, ps in session_providers.items()
+        }
+
+
 def _cleanup_session(session_id: str) -> None:
-    """Remove all in-memory state for a session (session + model data)."""
+    """Remove all in-memory state for a session (session + model + provider data)."""
     with _STATE_LOCK:
         _SESSIONS.pop(session_id, None)
         _MODELS.pop(session_id, None)
+        _PROVIDERS.pop(session_id, None)
