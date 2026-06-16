@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -191,5 +192,16 @@ def create_app(store: Any) -> FastAPI:
                 status_code=404, detail=f"No events found for session '{session_id}'"
             )
         return TrendResponse(session_id=session_id, models=models, providers=providers)
+
+    @app.get("/metrics")
+    def metrics():
+        """Prometheus metrics endpoint — returns text exposition format."""
+        from prometheus_metrics import generate_metrics, metrics_available as _ma
+        if not _ma():
+            raise HTTPException(503, "prometheus_client not installed")
+        return Response(
+            content=generate_metrics(),
+            media_type="text/plain; version=0.0.4; charset=utf-8",
+        )
 
     return app

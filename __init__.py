@@ -79,6 +79,9 @@ MAX_SESSIONS = 50  # LRU eviction threshold
 # Persistent store (set during register, may remain None on failure)
 _STORE: Optional[Any] = None  # PersistentSessionStore | None
 
+# Prometheus metrics flag (set in register(), defaults to disabled)
+_prometheus_enabled: bool = False
+
 
 class _SessionTPS:
     """Tracks TPS metrics for a single session."""
@@ -352,6 +355,15 @@ def _on_post_api_request(**kwargs: Any) -> None:
         provider = _extract_provider(model)
         provider_state = _get_provider(session_id, provider)
         provider_state.record(output_tokens, duration)
+        # Update Prometheus metrics (inside lock for consistent snapshot)
+        if _prometheus_enabled:
+            try:
+                from prometheus_metrics import update_metrics as _update_prom
+                session_models = _MODELS.get(session_id, {})
+                session_providers = _PROVIDERS.get(session_id, {})
+                _update_prom(session_id, state, session_models, session_providers)
+            except Exception:
+                pass
 
     # LRU eviction safety net
     _evict_if_needed()
@@ -457,7 +469,7 @@ def _on_session_end(**kwargs: Any) -> None:
 
 def register(ctx: Any) -> None:
     """Plugin entry point — called by Hermes plugin loader."""
-    global _STORE
+    global _STORE, _prometheus_enabled
 
     # Read DB path from plugin config, with sensible default
     default_path = os.path.expanduser("~/.hermes/plugins/tps-counter/tps.db")
@@ -492,6 +504,18 @@ def register(ctx: Any) -> None:
         host = api_config.get("host", "127.0.0.1")
         port = api_config.get("port", 9127)
         _start_api_server(_STORE, host, port)
+
+    # Optionally enable Prometheus metrics
+    prom_config = config.get("prometheus", {})
+    if prom_config and prom_config.get("enabled", False):
+        from prometheus_metrics import metrics_available
+        if metrics_available():
+            _prometheus_enabled = True
+            logger.info("tps-counter: Prometheus metrics enabled at /metrics")
+        else:
+            logger.warning(
+                "tps-counter: prometheus.enabled=true but prometheus_client not installed"
+            )
 
 
 # Expose state for /usage integration or external queries
