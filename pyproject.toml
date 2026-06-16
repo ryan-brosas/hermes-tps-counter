@@ -1,0 +1,8 @@
+[project]
+name = "hermes-tps-counter"
+version = "1.0.0"
+description = "Hermes plugin: tokens-per-second throughput tracker"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
