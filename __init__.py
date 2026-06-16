@@ -8,11 +8,14 @@ No configuration required — works out of the box.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import threading
 import time
 from typing import Any, Dict, List, Optional
+
+from config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +76,18 @@ _SESSIONS: Dict[str, "_SessionTPS"] = {}
 _MODELS: Dict[str, Dict[str, "_ModelTPS"]] = {}  # session_id → model_name → _ModelTPS
 _PROVIDERS: Dict[str, Dict[str, "_ProviderTPS"]] = {}  # session_id → provider → _ProviderTPS
 
+# Session lifecycle limits (from config module, defaults to 50)
+MAX_SESSIONS = 50  # backward compat constant; actual eviction uses get_config().max_sessions
+
 # Persistent store (set during register, may remain None on failure)
 _STORE: Optional[Any] = None  # PersistentSessionStore | None
+
+# Prometheus metrics flag (set in register(), defaults to disabled)
+_prometheus_enabled: bool = False
+
+# WebSocket streaming state (set when API server starts)
+_WS_MANAGER: Optional[Any] = None  # ConnectionManager | None
+_EVENT_LOOP: Optional[Any] = None  # asyncio.AbstractEventLoop | None
 
 
 class _SessionTPS:
@@ -93,6 +106,7 @@ class _SessionTPS:
         "turn_start_tokens",
         "turn_start_input_tokens",
         "turn_start_time",
+        "created_at",
     )
 
     def __init__(self) -> None:
@@ -108,6 +122,7 @@ class _SessionTPS:
         self.turn_start_tokens: int = 0
         self.turn_start_input_tokens: int = 0
         self.turn_start_time: float = time.time()
+        self.created_at: float = time.time()
 
     def record(self, output_tokens: int, duration: float, input_tokens: int = 0) -> None:
         self.call_count += 1
@@ -272,6 +287,11 @@ def _hydrate_from_db(session_id: str) -> Optional[_SessionTPS]:
         return s
     except Exception as exc:
         logger.warning("tps-counter: DB read failed, disabling store: %s", exc)
+        try:
+            from prometheus_metrics import increment_db_read_error
+            increment_db_read_error()
+        except Exception:
+            pass
         return None
 
 
@@ -283,6 +303,11 @@ def _persist_state(session_id: str, state: _SessionTPS) -> None:
         _STORE.save(session_id, state)
     except Exception as exc:
         logger.warning("tps-counter: DB write failed, disabling store: %s", exc)
+        try:
+            from prometheus_metrics import increment_db_write_error
+            increment_db_write_error()
+        except Exception:
+            pass
 
 
 def _get_session(session_id: str) -> _SessionTPS:
@@ -322,6 +347,14 @@ def _on_post_api_request(**kwargs: Any) -> None:
     input_tokens, output_tokens = _extract_usage(usage)
     duration = kwargs.get("api_duration", 0.0) or 0.0
 
+    # Track extraction failures: non-empty usage dict but zero tokens extracted
+    if usage and isinstance(usage, dict) and input_tokens == 0 and output_tokens == 0:
+        try:
+            from prometheus_metrics import increment_usage_extraction_failure
+            increment_usage_extraction_failure()
+        except Exception:
+            pass
+
     if output_tokens <= 0 or duration <= 0:
         return
 
@@ -331,6 +364,14 @@ def _on_post_api_request(**kwargs: Any) -> None:
         state.record(output_tokens, duration, input_tokens)
         # Write-through to SQLite
         _persist_state(session_id, state)
+        # Record per-call event
+        if _STORE is not None:
+            tps_val = output_tokens / duration if duration > 0 else 0.0
+            provider_val = _extract_provider(model)
+            try:
+                _STORE.record_event(session_id, model, provider_val, input_tokens, output_tokens, duration, tps_val)
+            except Exception as exc:
+                logger.debug("tps-counter: event recording failed: %s", exc)
         # Per-model tracking
         if model:
             model_state = _get_model(session_id, model)
@@ -339,6 +380,18 @@ def _on_post_api_request(**kwargs: Any) -> None:
         provider = _extract_provider(model)
         provider_state = _get_provider(session_id, provider)
         provider_state.record(output_tokens, duration)
+        # Update Prometheus metrics (inside lock for consistent snapshot)
+        if _prometheus_enabled:
+            try:
+                from prometheus_metrics import update_metrics as _update_prom
+                session_models = _MODELS.get(session_id, {})
+                session_providers = _PROVIDERS.get(session_id, {})
+                _update_prom(session_id, state, session_models, session_providers)
+            except Exception:
+                pass
+
+    # LRU eviction safety net
+    _evict_if_needed()
 
     # Expose TPS snapshot for status bar integration
     try:
@@ -385,6 +438,27 @@ def _on_post_api_request(**kwargs: Any) -> None:
     except Exception as exc:
         logger.debug("tps-counter: failed to inject status bar data: %s", exc)
 
+    # Broadcast TPS snapshot to WebSocket clients (fire-and-forget)
+    try:
+        if _WS_MANAGER is not None and _EVENT_LOOP is not None:
+            from api import broadcast_tps_update
+            # Build a snapshot dict from the current state
+            ws_snapshot = {
+                "session_id": session_id,
+                "last_tps": state.last_call_tps,
+                "avg_tps": state.avg_tps,
+                "peak_tps": state.peak_tps,
+                "output_tokens": state.total_output_tokens,
+                "input_tokens": state.total_input_tokens,
+                "total_tokens": state.total_tokens,
+                "call_count": state.call_count,
+            }
+            asyncio.run_coroutine_threadsafe(
+                broadcast_tps_update(_WS_MANAGER, ws_snapshot), _EVENT_LOOP
+            )
+    except Exception as exc:
+        logger.debug("tps-counter: WebSocket broadcast failed: %s", exc)
+
     # Log at debug level so it doesn't spam
     logger.debug(
         "TPS: %.1f tok/s (%d tokens in %.2fs) [session %s]",
@@ -395,35 +469,100 @@ def _on_post_api_request(**kwargs: Any) -> None:
     )
 
 
+_API_SERVER: Optional[Any] = None  # uvicorn.Server reference for shutdown
+
+
+def _start_api_server(store: Any, host: str, port: int) -> None:
+    """Start the FastAPI TPS API in a daemon thread."""
+    global _API_SERVER, _WS_MANAGER, _EVENT_LOOP
+    try:
+        import asyncio
+        import uvicorn
+        from api import create_app
+
+        app = create_app(store)
+        # Capture the ConnectionManager for hook-triggered broadcasts
+        _WS_MANAGER = getattr(app.state, "ws_manager", None)
+
+        config = uvicorn.Config(
+            app, host=host, port=port, log_level="warning", access_log=False,
+        )
+        server = uvicorn.Server(config)
+        _API_SERVER = server
+
+        def _run_server() -> None:
+            """Thread target — captures the event loop for cross-thread scheduling."""
+            global _EVENT_LOOP
+            _EVENT_LOOP = asyncio.new_event_loop()
+            asyncio.set_event_loop(_EVENT_LOOP)
+            # Run uvicorn on this loop
+            _EVENT_LOOP.run_until_complete(server.serve())
+
+        thread = threading.Thread(target=_run_server, daemon=True, name="tps-api")
+        thread.start()
+        logger.info("tps-counter: API server started on %s:%d", host, port)
+    except Exception as exc:
+        logger.warning("tps-counter: failed to start API server: %s", exc)
+
+
+def _stop_api_server() -> None:
+    """Signal the API server to shut down."""
+    global _API_SERVER
+    if _API_SERVER is not None:
+        try:
+            _API_SERVER.should_exit = True
+            logger.info("tps-counter: API server shutting down")
+        except Exception:
+            pass
+        _API_SERVER = None
+
+
+def _on_session_end(**kwargs: Any) -> None:
+    """Hook callback: clean up session state when a session ends."""
+    session_id = kwargs.get("session_id", "")
+    if not session_id:
+        logger.debug("tps-counter: on_session_end called without session_id")
+        return
+    _cleanup_session(session_id)
+
+
 def register(ctx: Any) -> None:
     """Plugin entry point — called by Hermes plugin loader."""
-    global _STORE
+    global _STORE, _prometheus_enabled
 
-    # Read DB path from plugin config, with sensible default
-    default_path = os.path.expanduser("~/.hermes/plugins/tps-counter/tps.db")
-    try:
-        config = {}
-        if hasattr(ctx, "get_config"):
-            config = ctx.get_config("tps_counter", {}) or {}
-        elif hasattr(ctx, "config"):
-            config = getattr(ctx, "config", {}).get("tps_counter", {}) or {}
-    except Exception:
-        config = {}
+    # Load merged config (defaults < TOML < env vars < ctx overrides)
+    cfg = get_config(ctx)
 
-    db_path = config.get("db_path", default_path)
+    db_path = cfg.db_path
 
     # Initialize persistent store
     try:
         from store import PersistentSessionStore
 
-        _STORE = PersistentSessionStore(db_path)
+        _STORE = PersistentSessionStore(db_path, retention_days=cfg.retention_days)
         logger.info("tps-counter: persistent store at %s", db_path)
     except Exception as exc:
         logger.warning("tps-counter: persistence unavailable, using in-memory only: %s", exc)
         _STORE = None
 
     ctx.register_hook("post_api_request", _on_post_api_request)
+    ctx.register_hook("on_session_end", _on_session_end)
     logger.info("tps-counter plugin registered")
+
+    # Optionally start the REST API server
+    if cfg.api_enabled:
+        _start_api_server(_STORE, cfg.api_host, cfg.api_port)
+
+    # Optionally enable Prometheus metrics
+    if cfg.prometheus_enabled:
+        from prometheus_metrics import metrics_available
+        if metrics_available():
+            _prometheus_enabled = True
+            logger.info("tps-counter: Prometheus metrics enabled at /metrics")
+        else:
+            logger.warning(
+                "tps-counter: prometheus.enabled=true but prometheus_client not installed"
+            )
 
 
 # Expose state for /usage integration or external queries
@@ -442,6 +581,7 @@ def get_tps_stats(session_id: str) -> Dict[str, Any]:
         "total_input_tokens": state.total_input_tokens,
         "total_tokens": state.total_tokens,
         "total_duration": round(state.total_duration, 2),
+        "session_duration": round(time.time() - state.created_at, 2),
     }
 
 
@@ -491,3 +631,28 @@ def _cleanup_session(session_id: str) -> None:
         _SESSIONS.pop(session_id, None)
         _MODELS.pop(session_id, None)
         _PROVIDERS.pop(session_id, None)
+    # Also remove from persistent store
+    if _STORE is not None:
+        try:
+            _STORE.delete(session_id)
+        except Exception as exc:
+            logger.debug("tps-counter: DB cleanup failed for %s: %s", session_id, exc)
+    logger.debug("tps-counter: cleaned up session %s", session_id[:8])
+
+
+def _evict_if_needed() -> None:
+    """Evict the session with the oldest turn_start_time if over max_sessions."""
+    max_sessions = get_config().max_sessions
+    with _STATE_LOCK:
+        if len(_SESSIONS) <= max_sessions:
+            return
+        # Find session with oldest turn_start_time (least recently active)
+        oldest_id = min(_SESSIONS, key=lambda sid: _SESSIONS[sid].turn_start_time)
+        _SESSIONS.pop(oldest_id, None)
+        _MODELS.pop(oldest_id, None)
+        _PROVIDERS.pop(oldest_id, None)
+        logger.debug(
+            "tps-counter: LRU evicted session %s (over %d limit)",
+            oldest_id[:8],
+            max_sessions,
+        )
