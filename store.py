@@ -131,8 +131,9 @@ class PersistentSessionStore:
         store.close()
     """
 
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db_path: str, retention_days: int = 7) -> None:
         self._db_path = db_path
+        self._retention_days = retention_days
         self._lock = threading.Lock()
         self._conn: Optional[sqlite3.Connection] = None
         self._event_write_counter: int = 0  # triggers lazy expiry every 100 writes
@@ -354,7 +355,7 @@ class PersistentSessionStore:
                 self._event_write_counter += 1
                 if self._event_write_counter >= 100:
                     self._event_write_counter = 0
-                    self._delete_expired_events_unlocked(7 * 86400)  # default 7 days
+                    self._delete_expired_events_unlocked(self._retention_days * 86400)
         except Exception as exc:
             logger.warning("tps-counter: event record failed for %s: %s", session_id, exc)
 

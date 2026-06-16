@@ -15,6 +15,8 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
+from config import get_config
+
 logger = logging.getLogger(__name__)
 
 # Ordered fallback key paths for usage extraction
@@ -74,8 +76,8 @@ _SESSIONS: Dict[str, "_SessionTPS"] = {}
 _MODELS: Dict[str, Dict[str, "_ModelTPS"]] = {}  # session_id → model_name → _ModelTPS
 _PROVIDERS: Dict[str, Dict[str, "_ProviderTPS"]] = {}  # session_id → provider → _ProviderTPS
 
-# Session lifecycle limits
-MAX_SESSIONS = 50  # LRU eviction threshold
+# Session lifecycle limits (from config module, defaults to 50)
+MAX_SESSIONS = 50  # backward compat constant; actual eviction uses get_config().max_sessions
 
 # Persistent store (set during register, may remain None on failure)
 _STORE: Optional[Any] = None  # PersistentSessionStore | None
@@ -510,24 +512,16 @@ def register(ctx: Any) -> None:
     """Plugin entry point — called by Hermes plugin loader."""
     global _STORE, _prometheus_enabled
 
-    # Read DB path from plugin config, with sensible default
-    default_path = os.path.expanduser("~/.hermes/plugins/tps-counter/tps.db")
-    try:
-        config = {}
-        if hasattr(ctx, "get_config"):
-            config = ctx.get_config("tps_counter", {}) or {}
-        elif hasattr(ctx, "config"):
-            config = getattr(ctx, "config", {}).get("tps_counter", {}) or {}
-    except Exception:
-        config = {}
+    # Load merged config (defaults < TOML < env vars < ctx overrides)
+    cfg = get_config(ctx)
 
-    db_path = config.get("db_path", default_path)
+    db_path = cfg.db_path
 
     # Initialize persistent store
     try:
         from store import PersistentSessionStore
 
-        _STORE = PersistentSessionStore(db_path)
+        _STORE = PersistentSessionStore(db_path, retention_days=cfg.retention_days)
         logger.info("tps-counter: persistent store at %s", db_path)
     except Exception as exc:
         logger.warning("tps-counter: persistence unavailable, using in-memory only: %s", exc)
@@ -538,15 +532,11 @@ def register(ctx: Any) -> None:
     logger.info("tps-counter plugin registered")
 
     # Optionally start the REST API server
-    api_config = config.get("api", {})
-    if api_config and api_config.get("enabled", False):
-        host = api_config.get("host", "127.0.0.1")
-        port = api_config.get("port", 9127)
-        _start_api_server(_STORE, host, port)
+    if cfg.api_enabled:
+        _start_api_server(_STORE, cfg.api_host, cfg.api_port)
 
     # Optionally enable Prometheus metrics
-    prom_config = config.get("prometheus", {})
-    if prom_config and prom_config.get("enabled", False):
+    if cfg.prometheus_enabled:
         from prometheus_metrics import metrics_available
         if metrics_available():
             _prometheus_enabled = True
@@ -633,9 +623,10 @@ def _cleanup_session(session_id: str) -> None:
 
 
 def _evict_if_needed() -> None:
-    """Evict the session with the oldest turn_start_time if over MAX_SESSIONS."""
+    """Evict the session with the oldest turn_start_time if over max_sessions."""
+    max_sessions = get_config().max_sessions
     with _STATE_LOCK:
-        if len(_SESSIONS) <= MAX_SESSIONS:
+        if len(_SESSIONS) <= max_sessions:
             return
         # Find session with oldest turn_start_time (least recently active)
         oldest_id = min(_SESSIONS, key=lambda sid: _SESSIONS[sid].turn_start_time)
@@ -645,5 +636,5 @@ def _evict_if_needed() -> None:
         logger.debug(
             "tps-counter: LRU evicted session %s (over %d limit)",
             oldest_id[:8],
-            MAX_SESSIONS,
+            max_sessions,
         )
