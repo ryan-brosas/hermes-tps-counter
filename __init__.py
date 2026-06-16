@@ -8,10 +8,13 @@ No configuration required — works out of the box.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
+import os
 import threading
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +25,172 @@ _SESSIONS: Dict[str, "_SessionTPS"] = {}
 _PLUGIN_NAME = "tps-counter"
 _PLUGIN_VERSION = "1.0.0"
 _OBSERVABILITY_CONTRACT_VERSION = "1.0.0"
+
+_PRIVACY_MODE_ENV = "HERMES_TPS_PRIVACY_MODE"
+_PRIVACY_SECRET_ENV = "HERMES_TPS_PRIVACY_SALT"
+_PRIVACY_SCOPE_ENV = "HERMES_TPS_PRIVACY_SCOPE"
+_PRIVACY_FIELDS_ENV = "HERMES_TPS_PRIVACY_FIELDS"
+_PRIVACY_TREATMENTS_ENV = "HERMES_TPS_PRIVACY_TREATMENTS"
+_PRIVACY_DEFAULT_SCOPE = "hermes-tps-counter"
+_PRIVACY_DEFAULT_SECRET = "hermes-tps-counter-default-privacy-key"
+_PRIVACY_IDENTIFIER_FIELDS = frozenset({"session_id", "model", "provider"})
+_PRIVACY_VALID_TREATMENTS = frozenset({"raw", "pseudonymized", "redacted", "omitted"})
+
+
+class _PrivacyPolicy:
+    """Dependency-free redaction policy for outbound observability identifiers."""
+
+    __slots__ = ("mode", "scope", "secret", "field_treatments")
+
+    def __init__(
+        self,
+        mode: str = "disabled",
+        *,
+        secret: str | None = None,
+        scope: str = _PRIVACY_DEFAULT_SCOPE,
+        field_treatments: Mapping[str, str] | None = None,
+    ) -> None:
+        normalized_mode = (mode or "disabled").strip().lower()
+        if normalized_mode in {"", "0", "false", "off", "disabled", "raw", "none"}:
+            normalized_mode = "disabled"
+        elif normalized_mode in {"1", "true", "on", "enabled", "pseudonym", "pseudonymized", "hash", "hashed"}:
+            normalized_mode = "pseudonymized"
+        elif normalized_mode == "redact":
+            normalized_mode = "redacted"
+        elif normalized_mode == "omit":
+            normalized_mode = "omitted"
+        elif normalized_mode not in {"pseudonymized", "redacted", "omitted"}:
+            normalized_mode = "disabled"
+
+        self.mode = normalized_mode
+        self.scope = scope or _PRIVACY_DEFAULT_SCOPE
+        self.secret = secret if secret is not None else _PRIVACY_DEFAULT_SECRET
+        self.field_treatments = self._normalize_treatments(field_treatments)
+
+    @staticmethod
+    def _normalize_treatments(field_treatments: Mapping[str, str] | None) -> Dict[str, str]:
+        treatments = {
+            field: "raw" for field in _PRIVACY_IDENTIFIER_FIELDS
+        }
+        if field_treatments:
+            for raw_field, raw_treatment in field_treatments.items():
+                field = str(raw_field).strip()
+                treatment = str(raw_treatment).strip().lower()
+                if field and treatment in _PRIVACY_VALID_TREATMENTS:
+                    treatments[field] = treatment
+        return treatments
+
+    @property
+    def enabled(self) -> bool:
+        return self.mode != "disabled"
+
+    def treatment_for(self, field: str) -> str:
+        if not self.enabled:
+            return "raw"
+        return self.field_treatments.get(field, "raw")
+
+    def redact_value(self, field: str, value: Any) -> Any:
+        treatment = self.treatment_for(field)
+        if treatment == "raw" or value is None:
+            return value
+        if treatment == "omitted":
+            return _OMITTED
+        if treatment == "redacted":
+            return "[redacted]"
+        raw_value = str(value)
+        digest = hmac.new(
+            self.secret.encode("utf-8"),
+            f"{self.scope}:{field}:{raw_value}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()[:16]
+        return f"{field}:pseudonym:{digest}"
+
+    def redact_payload(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        redacted: Dict[str, Any] = {}
+        for key, value in payload.items():
+            if isinstance(value, Mapping):
+                redacted[key] = self.redact_payload(value)
+                continue
+            treated = self.redact_value(key, value)
+            if treated is not _OMITTED:
+                redacted[key] = treated
+        return redacted
+
+    def diagnostics(self) -> Dict[str, Any]:
+        return {
+            "mode": self.mode,
+            "enabled": self.enabled,
+            "scope": self.scope,
+            "secret_configured": bool(os.environ.get(_PRIVACY_SECRET_ENV)),
+            "algorithm": "hmac-sha256-truncated-16" if self.enabled else None,
+            "identifier_fields": sorted(self.field_treatments.keys()),
+            "field_treatments": {
+                field: self.treatment_for(field)
+                for field in sorted(self.field_treatments.keys())
+            },
+            "secret_material_exposed": False,
+        }
+
+
+class _OmittedValue:
+    pass
+
+
+_OMITTED = _OmittedValue()
+
+
+def _parse_privacy_fields(raw_fields: str | None) -> set[str]:
+    fields = set(_PRIVACY_IDENTIFIER_FIELDS)
+    if raw_fields:
+        fields.update(field.strip() for field in raw_fields.split(",") if field.strip())
+    return fields
+
+
+def _parse_privacy_treatments(raw_treatments: str | None, default_treatment: str) -> Dict[str, str]:
+    fields = _parse_privacy_fields(os.environ.get(_PRIVACY_FIELDS_ENV))
+    treatments = {field: default_treatment for field in fields}
+    if raw_treatments:
+        for item in raw_treatments.split(","):
+            if "=" not in item:
+                continue
+            field, treatment = (part.strip() for part in item.split("=", 1))
+            if field and treatment in _PRIVACY_VALID_TREATMENTS:
+                treatments[field] = treatment
+    return treatments
+
+
+def _get_privacy_policy() -> _PrivacyPolicy:
+    mode = os.environ.get(_PRIVACY_MODE_ENV, "disabled")
+    normalized = (mode or "disabled").strip().lower()
+    if normalized in {"", "0", "false", "off", "disabled", "raw", "none"}:
+        default_treatment = "raw"
+    elif normalized in {"redact", "redacted"}:
+        default_treatment = "redacted"
+    elif normalized in {"omit", "omitted"}:
+        default_treatment = "omitted"
+    else:
+        default_treatment = "pseudonymized"
+    return _PrivacyPolicy(
+        mode,
+        secret=os.environ.get(_PRIVACY_SECRET_ENV),
+        scope=os.environ.get(_PRIVACY_SCOPE_ENV, _PRIVACY_DEFAULT_SCOPE),
+        field_treatments=_parse_privacy_treatments(os.environ.get(_PRIVACY_TREATMENTS_ENV), default_treatment),
+    )
+
+
+def _redact_identifier(field: str, value: Any, policy: _PrivacyPolicy | None = None) -> Any:
+    """Redact one outbound identifier field according to the shared TPS policy."""
+    return (policy or _get_privacy_policy()).redact_value(field, value)
+
+
+def _redact_payload(payload: Mapping[str, Any], policy: _PrivacyPolicy | None = None) -> Dict[str, Any]:
+    """Redact identifier-like fields in an outbound mapping using the shared policy."""
+    return (policy or _get_privacy_policy()).redact_payload(payload)
+
+
+def get_privacy_diagnostics() -> Dict[str, Any]:
+    """Return secret-safe privacy mode diagnostics for consumers and tests."""
+    return _get_privacy_policy().diagnostics()
 
 
 class _SessionTPS:
@@ -124,6 +293,7 @@ def _on_post_api_request(**kwargs: Any) -> None:
 
     state = _get_session(session_id)
     state.record(output_tokens, duration)
+    privacy_policy = _get_privacy_policy()
     # Expose TPS snapshot for status bar integration
     try:
         from hermes_cli import _ACTIVE_CLI_INSTANCE
@@ -131,7 +301,7 @@ def _on_post_api_request(**kwargs: Any) -> None:
         if cli is not None:
             agent = getattr(cli, "agent", None)
             if agent is not None:
-                agent._tps_snapshot = {
+                snapshot = {
                     "last_tps": state.last_call_tps,
                     "avg_tps": state.avg_tps,
                     "peak_tps": state.peak_tps,
@@ -141,16 +311,25 @@ def _on_post_api_request(**kwargs: Any) -> None:
                     "updated_monotonic": time.monotonic(),
                     "session_id": session_id,
                 }
+                for identifier_field in ("model", "provider"):
+                    if identifier_field in kwargs and kwargs[identifier_field] is not None:
+                        snapshot[identifier_field] = kwargs[identifier_field]
+                agent._tps_snapshot = _redact_payload(snapshot, privacy_policy)
     except Exception as exc:
         logger.debug("tps-counter: failed to inject status bar data: %s", exc)
 
     # Log at debug level so it doesn't spam
+    log_session_id = _redact_identifier("session_id", session_id, privacy_policy)
+    if log_session_id is _OMITTED:
+        log_session_id = "[omitted]"
+    elif not privacy_policy.enabled:
+        log_session_id = str(log_session_id)[:8]
     logger.debug(
         "TPS: %.1f tok/s (%d tokens in %.2fs) [session %s]",
         state.last_call_tps,
         output_tokens,
         duration,
-        session_id[:8],
+        log_session_id,
     )
 
 
@@ -168,6 +347,7 @@ def get_observability_contract() -> Dict[str, Any]:
     from this plugin and marks optional surfaces that are not present in this
     branch as unavailable.
     """
+    privacy = get_privacy_diagnostics()
     return {
         "contract": {
             "name": "hermes-tps-counter-observability",
@@ -190,6 +370,34 @@ def get_observability_contract() -> Dict[str, Any]:
             "unknown_fields": "ignore",
             "breaking_changes": "require a new major contract_version",
             "runtime_overhead": "static metadata only; no session scans, SQLite queries, network calls, timers, or background work",
+        },
+        "privacy": {
+            "mode": privacy["mode"],
+            "enabled": privacy["enabled"],
+            "configuration": {
+                "mode_env": _PRIVACY_MODE_ENV,
+                "secret_env": _PRIVACY_SECRET_ENV,
+                "scope_env": _PRIVACY_SCOPE_ENV,
+                "fields_env": _PRIVACY_FIELDS_ENV,
+                "field_treatments_env": _PRIVACY_TREATMENTS_ENV,
+                "secret_configured": privacy["secret_configured"],
+                "secret_material_exposed": False,
+            },
+            "identifier_fields": privacy["identifier_fields"],
+            "field_treatments": privacy["field_treatments"],
+            "treatment_values": {
+                "raw": "Identifier is emitted unchanged; this is the default disabled/backward-compatible behavior.",
+                "pseudonymized": "Identifier is replaced by a deterministic HMAC-SHA256 pseudonym scoped by field and configured scope.",
+                "redacted": "Identifier is replaced by a constant [redacted] marker.",
+                "omitted": "Identifier field is removed from outbound payloads when the surface can tolerate omission.",
+            },
+            "deterministic_grouping": {
+                "available_when": "field_treatments[field] == 'pseudonymized'",
+                "stable_for": "same raw value, field name, configured scope, and secret/salt",
+                "changes_when": "the raw value, field, scope, or secret/salt changes",
+                "raw_values_recoverable_from_output": False,
+            },
+            "trusted_state": "Raw identifiers remain internal for session lookup and TPS correctness; redaction is applied at outbound boundaries.",
         },
         "status_snapshot": {
             "available": True,
@@ -243,7 +451,8 @@ def get_observability_contract() -> Dict[str, Any]:
                     "type": "string",
                     "unit": None,
                     "source": "post_api_request session_id",
-                    "semantics": "Session that produced the snapshot; compare with the active session to prevent cross-session display leakage.",
+                    "semantics": "Session that produced the snapshot; compare with the active session to prevent cross-session display leakage. In disabled mode this is the raw session id for backward compatibility; in enabled privacy mode this field follows privacy.field_treatments.session_id.",
+                    "privacy_treatment": privacy["field_treatments"].get("session_id", "raw"),
                 },
             },
         },

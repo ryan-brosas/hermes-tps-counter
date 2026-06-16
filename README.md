@@ -67,11 +67,11 @@ Every `_tps_snapshot` includes freshness metadata that consumers can use to supp
 |-------|------|-------------|
 | `updated_at` | `float` | Wall-clock time (`time.time()`) when the snapshot was created. Useful for logging and diagnostics. |
 | `updated_monotonic` | `float` | Monotonic time (`time.monotonic()`) when the snapshot was created. Use this for robust age calculations that survive system clock changes. |
-| `session_id` | `str` | The session that produced this snapshot. Compare against the active session to detect cross-session data leakage. |
+| `session_id` | `str` | The session that produced this snapshot. In default mode this is the raw session id for backward compatibility; in privacy mode it follows the configured field treatment. Compare against the active session after applying the same treatment policy to detect cross-session data leakage. |
 
 **Recommended stale-threshold behavior** — consumers should compare `time.monotonic() - snapshot["updated_monotonic"]` against a configurable threshold (e.g. 30–120 seconds). If the age exceeds the threshold, suppress or gray-out the TPS display rather than showing potentially stale data.
 
-**Recommended session-mismatch behavior** — if `snapshot["session_id"]` does not match the active session identifier, consumers should ignore or reset the TPS display.
+**Recommended session-mismatch behavior** — if `snapshot["session_id"]` does not match the active session identifier, consumers should ignore or reset the TPS display. With privacy mode disabled, compare the raw active session id as before. With privacy pseudonymization enabled, compare the snapshot value to the same policy-treated active session id; do not compare a raw active id to a pseudonymized snapshot id.
 
 **Example with freshness checks:**
 
@@ -142,6 +142,9 @@ The contract includes these stable top-level sections:
 - `contract` — contract name/version plus plugin name/version from
   `plugin.yaml`.
 - `compatibility` — additive-compatibility rules and runtime-overhead notes.
+- `privacy` — active redaction mode, covered identifier fields, per-field
+  treatments (`raw`, `pseudonymized`, `redacted`, or `omitted`), and safe
+  diagnostics that never expose salts or secrets.
 - `status_snapshot` — metadata for `agent._tps_snapshot` fields including
   `last_tps`, `avg_tps`, `peak_tps`, `output_tokens`, `updated_at`,
   `updated_monotonic`, and `session_id`.
@@ -167,8 +170,36 @@ session.
 Prometheus consumers should keep label cardinality low. Every unique label set
 creates a time series, so avoid unbounded labels such as raw session ids, user
 ids, prompts, or request ids unless a future contract version explicitly marks a
-dimension as bounded or safe.
+dimension as bounded or safe. When privacy mode is enabled, prefer omitted or
+coarsely redacted labels for high-cardinality dimensions unless deterministic
+grouping is required and the cardinality impact is understood.
 
-## No Configuration Required
+## Privacy Redaction
 
-Works out of the box. No env vars or config needed.
+By default the plugin is disabled/raw-compatible for privacy so existing status
+bar integrations and `snapshot["session_id"]` comparisons keep working unchanged.
+Set `HERMES_TPS_PRIVACY_MODE` to `pseudonymized`, `redacted`, or `omitted` to
+transform covered identifiers before they leave trusted in-process state.
+
+Covered fields are `session_id`, `model`, and `provider`; add future
+identifier-like metadata with `HERMES_TPS_PRIVACY_FIELDS` as a comma-separated
+list. Per-field overrides can be supplied with `HERMES_TPS_PRIVACY_TREATMENTS`,
+for example `provider=redacted,tenant_id=omitted`. The secret/salt is read from
+`HERMES_TPS_PRIVACY_SALT` and an optional grouping scope from
+`HERMES_TPS_PRIVACY_SCOPE`. These values are configuration inputs only: they are
+not emitted in logs, snapshots, API helper responses, contracts, or examples.
+
+Treatment meanings:
+
+| Treatment | Behavior |
+|-----------|----------|
+| `raw` | Emit the identifier unchanged. This is the disabled/default behavior. |
+| `pseudonymized` | Emit a deterministic HMAC-SHA256 pseudonym scoped by field and configured scope. The same raw value with the same salt/scope gives the same pseudonym for grouping; changing the salt or scope changes the output. |
+| `redacted` | Emit the constant `[redacted]` marker. |
+| `omitted` | Remove the field from outbound payloads when the surface can tolerate omission. |
+
+Raw identifiers remain internal for `_SESSIONS` lookup and `get_tps_stats(session_id)` input. Consumers that compare session ids should either leave privacy mode disabled or compare against the same treated value described by `get_observability_contract()["privacy"]["field_treatments"]`.
+
+## Default Configuration
+
+Works out of the box with privacy redaction disabled for backward compatibility; set the privacy environment variables above only when redaction is desired.
