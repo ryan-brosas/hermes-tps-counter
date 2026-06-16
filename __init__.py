@@ -8,6 +8,7 @@ No configuration required — works out of the box.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import threading
@@ -81,6 +82,10 @@ _STORE: Optional[Any] = None  # PersistentSessionStore | None
 
 # Prometheus metrics flag (set in register(), defaults to disabled)
 _prometheus_enabled: bool = False
+
+# WebSocket streaming state (set when API server starts)
+_WS_MANAGER: Optional[Any] = None  # ConnectionManager | None
+_EVENT_LOOP: Optional[Any] = None  # asyncio.AbstractEventLoop | None
 
 
 class _SessionTPS:
@@ -413,6 +418,27 @@ def _on_post_api_request(**kwargs: Any) -> None:
     except Exception as exc:
         logger.debug("tps-counter: failed to inject status bar data: %s", exc)
 
+    # Broadcast TPS snapshot to WebSocket clients (fire-and-forget)
+    try:
+        if _WS_MANAGER is not None and _EVENT_LOOP is not None:
+            from api import broadcast_tps_update
+            # Build a snapshot dict from the current state
+            ws_snapshot = {
+                "session_id": session_id,
+                "last_tps": state.last_call_tps,
+                "avg_tps": state.avg_tps,
+                "peak_tps": state.peak_tps,
+                "output_tokens": state.total_output_tokens,
+                "input_tokens": state.total_input_tokens,
+                "total_tokens": state.total_tokens,
+                "call_count": state.call_count,
+            }
+            asyncio.run_coroutine_threadsafe(
+                broadcast_tps_update(_WS_MANAGER, ws_snapshot), _EVENT_LOOP
+            )
+    except Exception as exc:
+        logger.debug("tps-counter: WebSocket broadcast failed: %s", exc)
+
     # Log at debug level so it doesn't spam
     logger.debug(
         "TPS: %.1f tok/s (%d tokens in %.2fs) [session %s]",
@@ -428,18 +454,31 @@ _API_SERVER: Optional[Any] = None  # uvicorn.Server reference for shutdown
 
 def _start_api_server(store: Any, host: str, port: int) -> None:
     """Start the FastAPI TPS API in a daemon thread."""
-    global _API_SERVER
+    global _API_SERVER, _WS_MANAGER, _EVENT_LOOP
     try:
+        import asyncio
         import uvicorn
         from api import create_app
 
         app = create_app(store)
+        # Capture the ConnectionManager for hook-triggered broadcasts
+        _WS_MANAGER = getattr(app.state, "ws_manager", None)
+
         config = uvicorn.Config(
             app, host=host, port=port, log_level="warning", access_log=False,
         )
         server = uvicorn.Server(config)
         _API_SERVER = server
-        thread = threading.Thread(target=server.run, daemon=True, name="tps-api")
+
+        def _run_server() -> None:
+            """Thread target — captures the event loop for cross-thread scheduling."""
+            global _EVENT_LOOP
+            _EVENT_LOOP = asyncio.new_event_loop()
+            asyncio.set_event_loop(_EVENT_LOOP)
+            # Run uvicorn on this loop
+            _EVENT_LOOP.run_until_complete(server.serve())
+
+        thread = threading.Thread(target=_run_server, daemon=True, name="tps-api")
         thread.start()
         logger.info("tps-counter: API server started on %s:%d", host, port)
     except Exception as exc:

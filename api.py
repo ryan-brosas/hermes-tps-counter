@@ -6,15 +6,83 @@ started as a background thread from the plugin's register() entry point.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Any, Dict, List, Optional
+import threading
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Set
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# WebSocket ConnectionManager
+# ---------------------------------------------------------------------------
+
+class ConnectionManager:
+    """Thread-safe manager for WebSocket connections.
+
+    Tracks connected clients and broadcasts JSON messages to all.
+    Uses asyncio.create_task for non-blocking sends so a slow client
+    cannot block broadcasts to others.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._clients: Set[WebSocket] = set()
+
+    async def connect(self, ws: WebSocket) -> None:
+        """Accept a WebSocket connection and add it to the client set."""
+        await ws.accept()
+        with self._lock:
+            self._clients.add(ws)
+
+    def disconnect(self, ws: WebSocket) -> None:
+        """Remove a WebSocket from the client set (idempotent)."""
+        with self._lock:
+            self._clients.discard(ws)
+
+    @property
+    def count(self) -> int:
+        """Number of currently connected clients."""
+        with self._lock:
+            return len(self._clients)
+
+    async def broadcast(self, message: dict) -> None:
+        """Send a JSON message to all connected clients.
+
+        Dead clients (WebSocketDisconnect, ConnectionError) are silently
+        removed. Individual sends are dispatched as tasks so one slow
+        client cannot block others.
+        """
+        with self._lock:
+            clients = list(self._clients)
+        if not clients:
+            return
+        tasks = [asyncio.create_task(self._safe_send(ws, message)) for ws in clients]
+        await asyncio.gather(*tasks)
+
+    async def _safe_send(self, ws: WebSocket, message: dict) -> None:
+        """Send JSON to one client; remove on failure."""
+        try:
+            await ws.send_json(message)
+        except (WebSocketDisconnect, ConnectionError, RuntimeError):
+            self.disconnect(ws)
+
+
+async def broadcast_tps_update(manager: ConnectionManager, snapshot: dict) -> None:
+    """Broadcast a TPS snapshot wrapped in a typed message envelope."""
+    message = {
+        "type": "tps_update",
+        "data": snapshot,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    await manager.broadcast(message)
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +163,10 @@ def create_app(store: Any) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # ConnectionManager instance for WebSocket broadcasting
+    manager = ConnectionManager()
+    app.state.ws_manager = manager
 
     # ------------------------------------------------------------------
     # Endpoints
@@ -203,5 +275,22 @@ def create_app(store: Any) -> FastAPI:
             content=generate_metrics(),
             media_type="text/plain; version=0.0.4; charset=utf-8",
         )
+
+    # ------------------------------------------------------------------
+    # WebSocket endpoint
+    # ------------------------------------------------------------------
+
+    @app.websocket("/ws/tps")
+    async def websocket_tps(websocket: WebSocket) -> None:
+        """WebSocket endpoint that streams real-time TPS snapshots."""
+        await manager.connect(websocket)
+        try:
+            # Keep connection alive; receive_text detects disconnect
+            while True:
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            pass
+        finally:
+            manager.disconnect(websocket)
 
     return app
