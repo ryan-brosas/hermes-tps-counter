@@ -143,6 +143,96 @@ class TestAllSessionsEndpoint:
 
 
 # ---------------------------------------------------------------------------
+# Batch session TPS endpoint
+# ---------------------------------------------------------------------------
+
+class TestBatchSessionTPSEndpoint:
+
+    def test_returns_multiple_existing_sessions(self, client, store):
+        store.save("s1", {"call_count": 1, "total_output_tokens": 100,
+                           "total_input_tokens": 50, "total_duration": 2.0,
+                           "peak_tps": 50.0, "last_call_tps": 50.0, "avg_tps": 50.0})
+        store.save("s2", {"call_count": 3, "total_output_tokens": 300,
+                           "total_input_tokens": 150, "total_duration": 6.0,
+                           "peak_tps": 60.0, "last_call_tps": 55.0, "avg_tps": 50.0})
+
+        resp = client.post("/api/v1/sessions/batch/tps", json={"session_ids": ["s1", "s2"]})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert [s["session_id"] for s in data["sessions"]] == ["s1", "s2"]
+        assert data["missing_session_ids"] == []
+        assert data["sessions"][0]["call_count"] == 1
+        assert data["sessions"][1]["total_output_tokens"] == 300
+
+    def test_partial_miss_returns_found_and_missing(self, client, store):
+        store.save("s1", {"call_count": 1, "total_output_tokens": 100,
+                           "total_input_tokens": 50, "total_duration": 2.0,
+                           "peak_tps": 50.0, "last_call_tps": 50.0, "avg_tps": 50.0})
+
+        resp = client.post(
+            "/api/v1/sessions/batch/tps",
+            json={"session_ids": ["missing-1", "s1", "missing-2"]},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert [s["session_id"] for s in data["sessions"]] == ["s1"]
+        assert data["missing_session_ids"] == ["missing-1", "missing-2"]
+
+    def test_all_miss_returns_empty_sessions_and_all_missing(self, client):
+        resp = client.post(
+            "/api/v1/sessions/batch/tps",
+            json={"session_ids": ["missing-1", "missing-2"]},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["sessions"] == []
+        assert data["missing_session_ids"] == ["missing-1", "missing-2"]
+
+    def test_duplicate_ids_are_deduplicated_with_first_seen_order(self, client, store):
+        store.save("s1", {"call_count": 1, "total_output_tokens": 100,
+                           "total_input_tokens": 50, "total_duration": 2.0,
+                           "peak_tps": 50.0, "last_call_tps": 50.0, "avg_tps": 50.0})
+        store.save("s2", {"call_count": 2, "total_output_tokens": 200,
+                           "total_input_tokens": 80, "total_duration": 4.0,
+                           "peak_tps": 55.0, "last_call_tps": 45.0, "avg_tps": 50.0})
+
+        resp = client.post(
+            "/api/v1/sessions/batch/tps",
+            json={"session_ids": ["s2", "s1", "s2", "missing", "s1", "missing"]},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert [s["session_id"] for s in data["sessions"]] == ["s2", "s1"]
+        assert data["missing_session_ids"] == ["missing"]
+
+    def test_empty_input_returns_422(self, client):
+        resp = client.post("/api/v1/sessions/batch/tps", json={"session_ids": []})
+        assert resp.status_code == 422
+
+    def test_non_list_input_returns_422(self, client):
+        resp = client.post(
+            "/api/v1/sessions/batch/tps",
+            json={"session_ids": "not-a-list"},
+        )
+        assert resp.status_code == 422
+
+    def test_store_none_returns_503(self):
+        from api import create_app
+        from fastapi.testclient import TestClient
+        app = create_app(None)
+        c = TestClient(app)
+
+        resp = c.post("/api/v1/sessions/batch/tps", json={"session_ids": ["s1"]})
+
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "Database not available"
+
+
+# ---------------------------------------------------------------------------
 # Summary endpoint
 # ---------------------------------------------------------------------------
 

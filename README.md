@@ -144,6 +144,7 @@ When the API is enabled, open `http://127.0.0.1:9127/` (or your configured host/
 | `GET` | `/api/v1/health` | Health check — verify API and DB are reachable |
 | `GET` | `/api/v1/health/diagnostics` | Comprehensive component-level health diagnostics |
 | `GET` | `/api/v1/sessions` | List all sessions with TPS stats |
+| `POST` | `/api/v1/sessions/batch/tps` | TPS stats for multiple requested sessions |
 | `GET` | `/api/v1/sessions/{session_id}/tps` | TPS stats for a single session |
 | `GET` | `/api/v1/summary` | Aggregated TPS summary across all sessions |
 | `GET` | `/api/v1/events/{session_id}` | Per-call events for a session |
@@ -228,6 +229,71 @@ Returns an array of all tracked sessions:
       "updated_at": "2026-06-16T10:30:00Z"
     }
   ]
+}
+```
+
+### `POST /api/v1/sessions/batch/tps`
+
+Returns TPS stats for a requested subset of sessions in one call. Duplicate IDs are normalized (first-seen order is preserved), and missing sessions are reported in `missing_session_ids` instead of failing the whole request. Empty `session_ids` or non-list input returns FastAPI/Pydantic validation error `422`.
+
+Request:
+
+```json
+{
+  "session_ids": ["abc123", "def456"]
+}
+```
+
+Full-hit response:
+
+```json
+{
+  "sessions": [
+    {
+      "session_id": "abc123",
+      "call_count": 15,
+      "total_output_tokens": 12345,
+      "total_input_tokens": 45000,
+      "total_duration": 125.3,
+      "peak_tps": 456.2,
+      "last_call_tps": 114.0,
+      "avg_tps": 98.7,
+      "updated_at": "2026-06-16T10:30:00Z"
+    },
+    {
+      "session_id": "def456",
+      "call_count": 8,
+      "total_output_tokens": 6789,
+      "total_input_tokens": 22000,
+      "total_duration": 80.0,
+      "peak_tps": 220.4,
+      "last_call_tps": 85.0,
+      "avg_tps": 84.9,
+      "updated_at": "2026-06-16T10:31:00Z"
+    }
+  ],
+  "missing_session_ids": []
+}
+```
+
+Partial-miss response:
+
+```json
+{
+  "sessions": [
+    {
+      "session_id": "abc123",
+      "call_count": 15,
+      "total_output_tokens": 12345,
+      "total_input_tokens": 45000,
+      "total_duration": 125.3,
+      "peak_tps": 456.2,
+      "last_call_tps": 114.0,
+      "avg_tps": 98.7,
+      "updated_at": "2026-06-16T10:30:00Z"
+    }
+  ],
+  "missing_session_ids": ["missing-session"]
 }
 ```
 
