@@ -567,3 +567,160 @@ class TestHealthDiagnosticsEndpoint:
         assert memory["max_sessions"] == 100
         assert memory["models"] == 2
         assert memory["providers"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Historical Export endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestExportHistoryEndpoint:
+
+    def test_export_history_returns_200_with_json(self, client, store):
+        """Basic JSON export with seeded data."""
+        store.save("s1", {"call_count": 5, "total_output_tokens": 500,
+                          "total_input_tokens": 200, "total_duration": 10.0,
+                          "peak_tps": 80.0, "last_call_tps": 60.0, "avg_tps": 50.0})
+        store.record_event("s1", "gpt-4", "openai", 100, 200, 2.0, 100.0)
+
+        resp = client.get("/api/v1/export/history")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "metadata" in data
+        assert "sessions" in data
+        assert "events" in data
+        assert len(data["sessions"]) == 1
+        assert len(data["events"]) == 1
+        assert data["sessions"][0]["session_id"] == "s1"
+        assert data["events"][0]["session_id"] == "s1"
+
+    def test_export_history_503_when_store_none(self):
+        """Store unavailable returns 503."""
+        from api import create_app
+        from fastapi.testclient import TestClient
+        app = create_app(None)
+        c = TestClient(app)
+        resp = c.get("/api/v1/export/history")
+        assert resp.status_code == 503
+
+    def test_export_history_with_session_id_filter(self, client, store):
+        """Filters to specific session."""
+        store.save("s1", {"call_count": 1, "total_output_tokens": 100,
+                          "total_input_tokens": 50, "total_duration": 2.0,
+                          "peak_tps": 50.0, "last_call_tps": 50.0, "avg_tps": 50.0})
+        store.save("s2", {"call_count": 3, "total_output_tokens": 300,
+                          "total_input_tokens": 150, "total_duration": 6.0,
+                          "peak_tps": 60.0, "last_call_tps": 55.0, "avg_tps": 50.0})
+        store.record_event("s1", "gpt-4", "openai", 100, 200, 2.0, 100.0)
+        store.record_event("s2", "claude", "anthropic", 50, 100, 1.0, 100.0)
+
+        resp = client.get("/api/v1/export/history?session_id=s1")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["sessions"]) == 1
+        assert data["sessions"][0]["session_id"] == "s1"
+        assert all(e["session_id"] == "s1" for e in data["events"])
+
+    def test_export_history_with_time_bounds(self, client, store):
+        """since/until filters work."""
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc)
+        old = (now - timedelta(hours=2)).isoformat()
+        recent = (now - timedelta(minutes=5)).isoformat()
+
+        with store._lock:
+            store._conn.execute(
+                "INSERT INTO call_events (session_id, model, provider, input_tokens, output_tokens, duration, tps, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                ("s1", "m1", "p1", 10, 20, 1.0, 20.0, old),
+            )
+            store._conn.execute(
+                "INSERT INTO call_events (session_id, model, provider, input_tokens, output_tokens, duration, tps, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                ("s1", "m1", "p1", 30, 40, 2.0, 20.0, recent),
+            )
+            store._conn.commit()
+
+        since = (now - timedelta(hours=1)).isoformat()
+        resp = client.get(f"/api/v1/export/history?since={since}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["events"]) == 1
+        assert data["events"][0]["output_tokens"] == 40
+
+    def test_export_history_respects_limit(self, client, store):
+        """Limit parameter caps results."""
+        for i in range(10):
+            store.record_event("s1", "m1", "p1", i * 10, i * 20, 1.0, float(i * 20))
+
+        resp = client.get("/api/v1/export/history?limit=5")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["events"]) == 5
+
+    def test_export_history_rejects_invalid_limit(self, client):
+        """limit <= 0 returns 422."""
+        resp = client.get("/api/v1/export/history?limit=0")
+        assert resp.status_code == 422
+
+        resp = client.get("/api/v1/export/history?limit=-1")
+        assert resp.status_code == 422
+
+    def test_export_history_rejects_excessive_limit(self, client):
+        """limit > max_limit returns 422."""
+        resp = client.get("/api/v1/export/history?limit=2000")
+        assert resp.status_code == 422
+
+    def test_export_history_rejects_unsupported_format(self, client):
+        """format=xml returns 400."""
+        resp = client.get("/api/v1/export/history?format=xml")
+        assert resp.status_code == 400
+
+    def test_export_history_empty_result(self, client):
+        """No matching data returns 200 with empty arrays."""
+        resp = client.get("/api/v1/export/history")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["sessions"] == []
+        assert data["events"] == []
+        assert data["metadata"]["session_count"] == 0
+        assert data["metadata"]["event_count"] == 0
+
+    def test_export_history_csv_format(self, client, store):
+        """format=csv returns text/csv with correct columns."""
+        store.record_event("s1", "gpt-4", "openai", 100, 200, 2.0, 100.0)
+
+        resp = client.get("/api/v1/export/history?format=csv")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "text/csv; charset=utf-8"
+        lines = resp.text.strip().split("\n")
+        assert len(lines) == 2  # header + 1 data row
+        header = lines[0]
+        assert "session_id" in header
+        assert "model" in header
+
+    def test_export_history_metadata_fields(self, client, store):
+        """Response contains generated_at, filters, counts."""
+        store.save("s1", {"call_count": 1, "total_output_tokens": 100,
+                          "total_input_tokens": 50, "total_duration": 2.0,
+                          "peak_tps": 50.0, "last_call_tps": 50.0, "avg_tps": 50.0})
+        store.record_event("s1", "gpt-4", "openai", 100, 200, 2.0, 100.0)
+
+        resp = client.get("/api/v1/export/history")
+        data = resp.json()
+        meta = data["metadata"]
+        assert "generated_at" in meta
+        assert meta["session_count"] == 1
+        assert meta["event_count"] == 1
+        assert meta["format"] == "json"
+        assert "limit" in meta["filters"]
+
+    def test_existing_endpoints_not_regressed(self, client, store):
+        """Existing endpoints still work after export endpoint is added."""
+        # Health
+        resp = client.get("/api/v1/health")
+        assert resp.status_code == 200
+        # Sessions
+        resp = client.get("/api/v1/sessions")
+        assert resp.status_code == 200
+        # Summary
+        resp = client.get("/api/v1/summary")
+        assert resp.status_code == 200

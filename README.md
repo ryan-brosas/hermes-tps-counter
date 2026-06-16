@@ -149,6 +149,7 @@ When the API is enabled, open `http://127.0.0.1:9127/` (or your configured host/
 | `GET` | `/api/v1/summary` | Aggregated TPS summary across all sessions |
 | `GET` | `/api/v1/events/{session_id}` | Per-call events for a session |
 | `GET` | `/api/v1/trends/{session_id}` | Per-model and per-provider aggregated trends |
+| `GET` | `/api/v1/export/history` | Bounded historical export for offline analysis |
 | `GET` | `/metrics` | Prometheus metrics (see [Prometheus](#prometheus)) |
 
 ### `GET /api/v1/health`
@@ -359,6 +360,87 @@ Query parameters:
   }
 }
 ```
+
+### `GET /api/v1/export/history`
+
+Bounded historical export for offline analysis and dashboard import. Returns session TPS summaries and per-call events as JSON (default) or CSV. Every request is explicitly bounded — no unbounded SQLite reads.
+
+**Intended use:** Import into notebooks, spreadsheets, BI tools, or dashboard import flows. This endpoint is for local offline analysis, not remote public exposure.
+
+Query parameters:
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `session_id` | string | — | Filter to a specific session |
+| `since` | string | — | ISO 8601 timestamp lower bound |
+| `until` | string | — | ISO 8601 timestamp upper bound |
+| `limit` | int | `100` | Max rows to return (capped at `max_limit`) |
+| `max_limit` | int | `1000` | Hard upper bound on limit |
+| `format` | string | `json` | Response format: `json` or `csv` |
+
+**Bounds enforcement:**
+- Default limit: 100 rows
+- Maximum limit: 1000 rows — requests with `limit > 1000` return `422`
+- `limit <= 0` returns `422`
+- Unsupported `format` values return `400`
+
+**JSON response example:**
+
+```json
+{
+  "metadata": {
+    "generated_at": "2026-06-16T10:30:00+00:00",
+    "filters": {
+      "limit": 100
+    },
+    "session_count": 2,
+    "event_count": 5,
+    "format": "json"
+  },
+  "sessions": [
+    {
+      "session_id": "abc123",
+      "call_count": 15,
+      "total_output_tokens": 12345,
+      "total_input_tokens": 45000,
+      "total_duration": 125.3,
+      "peak_tps": 456.2,
+      "last_call_tps": 114.0,
+      "avg_tps": 98.7,
+      "updated_at": "2026-06-16T10:30:00Z"
+    }
+  ],
+  "events": [
+    {
+      "id": 1,
+      "session_id": "abc123",
+      "model": "gpt-4o",
+      "provider": "openai",
+      "input_tokens": 1500,
+      "output_tokens": 800,
+      "duration": 2.3,
+      "tps": 347.8,
+      "created_at": "2026-06-16T10:30:00Z"
+    }
+  ]
+}
+```
+
+**CSV response example** (`format=csv`):
+
+Returns `text/csv` with event rows. Sessions are not included in CSV output.
+
+```csv
+id,session_id,model,provider,input_tokens,output_tokens,duration,tps,created_at
+1,abc123,gpt-4o,openai,1500,800,2.3,347.8,2026-06-16T10:30:00Z
+```
+
+**Empty results:** Valid bounded queries with no matching data return `200` with empty `sessions` and `events` arrays (JSON) or a CSV with only the header row.
+
+**Error responses:**
+- `400` — unsupported format (e.g., `format=xml`)
+- `422` — invalid limit (zero, negative, or exceeds max)
+- `503` — store unavailable
 
 > **Note:** CORS is wide-open (`*`) for local dashboard development. Not suitable for public-facing deployments without a reverse proxy.
 
