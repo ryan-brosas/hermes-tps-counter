@@ -1,0 +1,27 @@
+{
+  "bead_id": "her-feat-prometheus-cardinality-guardrails-7v5",
+  "status": "closed",
+  "pr_url": "https://github.com/ryan-brosas/hermes-tps-counter/pull/19",
+  "commit_sha": "247a5bf",
+  "files_changed": 5,
+  "tests_total": 242,
+  "tests_passed": 242,
+  "tests_failed": 0,
+  "verification": {
+    "bounded_series_count": "100 sessions → 24 metric lines (fixed)",
+    "no_session_id_default": true,
+    "legacy_mode_works": true,
+    "model_overflow_at_cap": true,
+    "provider_overflow_at_cap": true,
+    "graceful_degradation": true
+  },
+  "files": [
+    "prometheus_metrics.py",
+    "config.py",
+    "__init__.py",
+    "tests/test_prometheus.py",
+    "README.md"
+  ],
+  "closed_at": "2026-06-16T14:32:53Z",
+  "actor": "hephaestis"
+}
