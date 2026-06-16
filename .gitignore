@@ -1,3 +1,11 @@
+# bv (beads viewer) local config and caches
+.bv/
 __pycache__/
 *.pyc
 .pytest_cache/
+MagicMock/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.hermes-tmp.*

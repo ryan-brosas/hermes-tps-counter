@@ -1,0 +1,13 @@
+# Progress: her-test-suite-l0o
+
+## Status: OPEN
+## Created: 2026-06-15
+
+### Tasks
+- [ ] Wave 1.1: Create pytest config (pyproject.toml)
+- [ ] Wave 1.2: Create tests directory structure
+- [ ] Wave 2.1: _SessionTPS class tests
+- [ ] Wave 2.2: Hook callback tests
+- [ ] Wave 2.3: Public API tests
+- [ ] Wave 3.1: Thread safety tests
+- [ ] Wave 4.1: Full suite verification

@@ -1,0 +1,47 @@
+{
+  "id": "her-input-token-tracking-z7h",
+  "title": "Track input tokens and total token throughput in TPS plugin",
+  "type": "feature",
+  "priority": 2,
+  "status": "in_progress",
+  "problem": "The post_api_request hook receives input_tokens in the usage dict but the plugin ignores them. No visibility into prompt size or total token throughput.",
+  "goal": "Add input token tracking to enable complete token visibility: input, output, and total tokens per call and per session.",
+  "scope_in": [
+    "Input token capture in _SessionTPS.record()",
+    "New fields in _SessionTPS: total_input_tokens, last_call_input_tokens",
+    "Updated summary_line() with total tokens",
+    "Updated _tps_snapshot dict",
+    "Updated get_tps_stats API"
+  ],
+  "scope_out": [
+    "Cost calculation",
+    "Per-model breakdown",
+    "Persistence to disk",
+    "New hooks or commands"
+  ],
+  "affected_files": {
+    "__init__.py": "modify — _SessionTPS class + hook + API",
+    "README.md": "modify — update API docs"
+  },
+  "success_criteria": [
+    "_on_post_api_request extracts input_tokens from usage dict",
+    "_SessionTPS tracks cumulative input tokens",
+    "get_tps_stats returns total_input_tokens and total_tokens",
+    "_tps_snapshot includes input_tokens key",
+    "summary_line() shows total tokens when available",
+    "No new dependencies (stdlib only)"
+  ],
+  "risks": [
+    {
+      "risk": "Changing _tps_snapshot structure may affect status bar",
+      "mitigation": "Additive only — new keys, existing keys unchanged"
+    },
+    {
+      "risk": "input_tokens may be 0 or missing for some providers",
+      "mitigation": "Same guard as output_tokens — check > 0 before recording"
+    }
+  ],
+  "dependencies": [],
+  "created_at": "2026-06-15T22:12:40Z",
+  "created_by": "prometheus"
+}

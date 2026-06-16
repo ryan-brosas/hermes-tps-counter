@@ -4,3 +4,4 @@ description: "Tracks tokens-per-second (TPS) throughput for LLM calls. Shows per
 author: ryan
 hooks:
   - post_api_request
+  - on_session_end
