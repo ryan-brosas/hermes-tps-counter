@@ -29,6 +29,7 @@ class TestHookValid:
         assert state.last_call_tps == 50.0
 
     def test_injects_tps_snapshot_on_agent(self):
+        import time as _time
         mock_agent = MagicMock()
         mock_cli = MagicMock()
         mock_cli.agent = mock_agent
@@ -46,6 +47,38 @@ class TestHookValid:
         assert snap["avg_tps"] == 50.0
         assert snap["peak_tps"] == 50.0
         assert snap["output_tokens"] == 200
+        # Freshness metadata assertions
+        assert isinstance(snap["updated_at"], float)
+        assert abs(snap["updated_at"] - _time.time()) < 1.0
+        assert isinstance(snap["updated_monotonic"], float)
+        assert abs(snap["updated_monotonic"] - _time.monotonic()) < 1.0
+        assert snap["session_id"] == "s2"
+
+    def test_snapshot_session_id_changes_on_new_call(self):
+        """Snapshot session_id reflects the most recent hook call."""
+        import time as _time
+        mock_agent = MagicMock()
+        mock_cli = MagicMock()
+        mock_cli.agent = mock_agent
+
+        with patch.dict("sys.modules", {"hermes_cli": MagicMock(_ACTIVE_CLI_INSTANCE=mock_cli)}):
+            _on_post_api_request(
+                session_id="alpha",
+                usage={"output_tokens": 100},
+                api_duration=2.0,
+            )
+            snap_first = mock_agent._tps_snapshot
+            assert snap_first["session_id"] == "alpha"
+
+            _on_post_api_request(
+                session_id="beta",
+                usage={"output_tokens": 150},
+                api_duration=3.0,
+            )
+            snap_second = mock_agent._tps_snapshot
+            assert snap_second["session_id"] == "beta"
+            # Freshness timestamp should be newer than first call
+            assert snap_second["updated_monotonic"] >= snap_first["updated_monotonic"]
 
 
 class TestHookEdgeCases:

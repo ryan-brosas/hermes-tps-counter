@@ -132,6 +132,10 @@ def _on_post_api_request(**kwargs: Any) -> None:
                     "avg_tps": state.avg_tps,
                     "peak_tps": state.peak_tps,
                     "output_tokens": state.total_output_tokens,
+                    # Freshness metadata for stale/cross-session detection
+                    "updated_at": time.time(),
+                    "updated_monotonic": time.monotonic(),
+                    "session_id": session_id,
                 }
     except Exception as exc:
         logger.debug("tps-counter: failed to inject status bar data: %s", exc)
