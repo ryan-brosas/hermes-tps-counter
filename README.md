@@ -84,3 +84,58 @@ stats = get_tps_stats(session_id)
 ## No Configuration Required
 
 Works out of the box. No env vars or config needed.
+
+## Threshold Alerting
+
+The plugin can alert you when TPS drops below acceptable levels. Alerts are evaluated in-hook after each API call — no background threads.
+
+### How It Works
+
+1. **Cold start**: The first 10 API calls establish a baseline TPS. The auto-threshold is set to 50% of that baseline.
+2. **Rolling window**: After each call, the plugin evaluates the average TPS over the last N calls (default: 5).
+3. **State machine**: Alert state transitions: `idle` → `firing` → `resolved`. Each transition emits a `tps_alert` hook event.
+4. **Status bar**: When the alert is firing, the status bar shows `⚠ TPS ALERT`.
+
+### Configuration
+
+| Env Var | Default | Description |
+|---------|---------|-------------|
+| `TPS_THRESHOLD` | Auto-calculated | Fixed TPS threshold in tok/s. If not set, auto-calculated from first 10 calls. |
+| `TPS_EVAL_WINDOW` | `5` | Number of recent calls to evaluate for the rolling average. |
+
+```bash
+# Set a fixed threshold of 50 tok/s
+export TPS_THRESHOLD=50
+
+# Evaluate over the last 10 calls instead of 5
+export TPS_EVAL_WINDOW=10
+```
+
+### Hook: `tps_alert`
+
+Other plugins can subscribe to alert events:
+
+```python
+def my_alert_handler(**kwargs):
+    session_id = kwargs["session_id"]
+    state = kwargs["state"]       # "firing" or "resolved"
+    tps = kwargs["tps"]           # current rolling average
+    threshold = kwargs["threshold"]
+    timestamp = kwargs["timestamp"]
+
+ctx.register_hook("tps_alert", my_alert_handler)
+```
+
+### Stats API
+
+`get_tps_stats()` now includes alert fields:
+
+```python
+stats = get_tps_stats(session_id)
+# {
+#   "calls": 15, "avg_tps": 98.7, "last_tps": 114.0, "peak_tps": 456.2,
+#   "total_output_tokens": 12345, "total_duration": 125.3,
+#   "alert_state": "idle",              # idle | firing | resolved
+#   "alert_threshold": 50.0,            # tok/s (None during cold start)
+# }
+```

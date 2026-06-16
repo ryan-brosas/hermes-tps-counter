@@ -53,10 +53,15 @@ class TestRegister:
     def test_register_calls_ctx_register_hook(self):
         ctx = MagicMock()
         register(ctx)
-        ctx.register_hook.assert_called_once_with("post_api_request", pytest.importorskip("__init__")._on_post_api_request)
+        # post_api_request hook is registered (first call)
+        calls = ctx.register_hook.call_args_list
+        hook_names = [c[0][0] for c in calls]
+        assert "post_api_request" in hook_names
+        # tps_alert hook is also registered
+        assert "tps_alert" in hook_names
 
     def test_register_hook_name(self):
         ctx = MagicMock()
         register(ctx)
-        args = ctx.register_hook.call_args
-        assert args[0][0] == "post_api_request"
+        first_call = ctx.register_hook.call_args_list[0]
+        assert first_call[0][0] == "post_api_request"
