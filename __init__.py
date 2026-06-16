@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 # Per-session TPS state, keyed by session_id
 _STATE_LOCK = threading.Lock()
 _SESSIONS: Dict[str, "_SessionTPS"] = {}
+_MODELS: Dict[str, Dict[str, "_ModelTPS"]] = {}  # session_id → model_name → _ModelTPS
 
 # Persistent store (set during register, may remain None on failure)
 _STORE: Optional[Any] = None  # PersistentSessionStore | None
@@ -102,6 +103,38 @@ class _SessionTPS:
         return str(n)
 
 
+class _ModelTPS:
+    """Tracks TPS metrics for a single model within a session."""
+
+    __slots__ = (
+        "call_count",
+        "total_output_tokens",
+        "total_duration",
+        "peak_tps",
+    )
+
+    def __init__(self) -> None:
+        self.call_count: int = 0
+        self.total_output_tokens: int = 0
+        self.total_duration: float = 0.0
+        self.peak_tps: float = 0.0
+
+    def record(self, output_tokens: int, duration: float) -> None:
+        self.call_count += 1
+        self.total_output_tokens += output_tokens
+        self.total_duration += duration
+        if duration > 0:
+            tps = output_tokens / duration
+            if tps > self.peak_tps:
+                self.peak_tps = tps
+
+    @property
+    def avg_tps(self) -> float:
+        if self.total_duration > 0:
+            return self.total_output_tokens / self.total_duration
+        return 0.0
+
+
 def _hydrate_from_db(session_id: str) -> Optional[_SessionTPS]:
     """Try to load a session from the persistent store."""
     if _STORE is None:
@@ -143,6 +176,15 @@ def _get_session(session_id: str) -> _SessionTPS:
         return _SESSIONS[session_id]
 
 
+def _get_model(session_id: str, model: str) -> _ModelTPS:
+    """Get or create a _ModelTPS for a session+model pair. Caller must hold _STATE_LOCK."""
+    if session_id not in _MODELS:
+        _MODELS[session_id] = {}
+    if model not in _MODELS[session_id]:
+        _MODELS[session_id][model] = _ModelTPS()
+    return _MODELS[session_id][model]
+
+
 def _on_post_api_request(**kwargs: Any) -> None:
     """Hook callback: record TPS after each LLM API call."""
     session_id = kwargs.get("session_id", "")
@@ -157,10 +199,15 @@ def _on_post_api_request(**kwargs: Any) -> None:
         return
 
     state = _get_session(session_id)
+    model = kwargs.get("model", "") or ""
     with _STATE_LOCK:
         state.record(output_tokens, duration)
         # Write-through to SQLite
         _persist_state(session_id, state)
+        # Per-model tracking
+        if model:
+            model_state = _get_model(session_id, model)
+            model_state.record(output_tokens, duration)
 
     # Expose TPS snapshot for status bar integration
     try:
@@ -169,12 +216,26 @@ def _on_post_api_request(**kwargs: Any) -> None:
         if cli is not None:
             agent = getattr(cli, "agent", None)
             if agent is not None:
-                agent._tps_snapshot = {
+                snapshot: Dict[str, Any] = {
                     "last_tps": state.last_call_tps,
                     "avg_tps": state.avg_tps,
                     "peak_tps": state.peak_tps,
                     "output_tokens": state.total_output_tokens,
                 }
+                # Include per-model breakdown if available
+                with _STATE_LOCK:
+                    session_models = _MODELS.get(session_id, {})
+                    if session_models:
+                        snapshot["models"] = {
+                            m: {
+                                "avg_tps": ms.avg_tps,
+                                "peak_tps": ms.peak_tps,
+                                "calls": ms.call_count,
+                                "total_output_tokens": ms.total_output_tokens,
+                            }
+                            for m, ms in session_models.items()
+                        }
+                agent._tps_snapshot = snapshot
     except Exception as exc:
         logger.debug("tps-counter: failed to inject status bar data: %s", exc)
 
@@ -234,3 +295,30 @@ def get_tps_stats(session_id: str) -> Dict[str, Any]:
         "total_output_tokens": state.total_output_tokens,
         "total_duration": round(state.total_duration, 2),
     }
+
+
+def get_model_stats(session_id: str) -> Dict[str, Dict[str, Any]]:
+    """Return per-model TPS stats for a session.
+
+    Returns:
+        Dict mapping model_name → {avg_tps, peak_tps, calls, total_output_tokens, total_duration}
+    """
+    with _STATE_LOCK:
+        session_models = _MODELS.get(session_id, {})
+        return {
+            model: {
+                "avg_tps": round(ms.avg_tps, 1),
+                "peak_tps": round(ms.peak_tps, 1),
+                "calls": ms.call_count,
+                "total_output_tokens": ms.total_output_tokens,
+                "total_duration": round(ms.total_duration, 2),
+            }
+            for model, ms in session_models.items()
+        }
+
+
+def _cleanup_session(session_id: str) -> None:
+    """Remove all in-memory state for a session (session + model data)."""
+    with _STATE_LOCK:
+        _SESSIONS.pop(session_id, None)
+        _MODELS.pop(session_id, None)
