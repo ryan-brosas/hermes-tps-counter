@@ -1,0 +1,41 @@
+{
+  "defaultProjectTrust": "prompt",
+
+  "agents": {
+    "analyst": {
+      "description": "Read-only — code review, exploration, research",
+      "model": "xiaomi-token-plan-sgp/mimo-v2.5-pro",
+      "thinkingLevel": "high",
+      "tools": ["read", "bash"],
+      "timeoutMs": 120000
+    },
+    "scout": {
+      "description": "Fast codebase reconnaissance — pattern search, file discovery",
+      "model": "xiaomi-token-plan-sgp/mimo-v2.5-pro",
+      "thinkingLevel": "minimal",
+      "tools": ["read", "bash"],
+      "timeoutMs": 60000
+    },
+    "reviewer-correctness": {
+      "description": "Logic errors, edge cases, contract violations",
+      "model": "xiaomi-token-plan-sgp/mimo-v2.5-pro",
+      "thinkingLevel": "high",
+      "tools": ["read", "bash"],
+      "timeoutMs": 120000
+    },
+    "reviewer-security": {
+      "description": "Injection, auth bypass, data exposure",
+      "model": "xiaomi-token-plan-sgp/mimo-v2.5-pro",
+      "thinkingLevel": "high",
+      "tools": ["read", "bash"],
+      "timeoutMs": 120000
+    },
+    "reviewer-performance": {
+      "description": "Algorithmic complexity, memory, blocking I/O",
+      "model": "xiaomi-token-plan-sgp/mimo-v2.5-pro",
+      "thinkingLevel": "high",
+      "tools": ["read", "bash"],
+      "timeoutMs": 120000
+    }
+  }
+}

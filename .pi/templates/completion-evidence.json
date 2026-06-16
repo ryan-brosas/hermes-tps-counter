@@ -1,0 +1,13 @@
+{
+  "bead_id": "[bead-id]",
+  "status": "verified",
+  "timestamp": "[ISO 8601]",
+  "verification_commands": [
+    "[command 1] → [result]",
+    "[command 2] → [result]"
+  ],
+  "requirements_met": {
+    "[requirement 1]": "PASS — [evidence]",
+    "[requirement 2]": "PASS — [evidence]"
+  }
+}

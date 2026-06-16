@@ -4,11 +4,9 @@ Hermes Agent plugin that tracks tokens-per-second (TPS) throughput after LLM cal
 
 ## What It Does
 
-- Registers the `post_api_request` hook declared in `plugin.yaml` (`name: tps-counter`, version `1.0.0`).
-- Records successful LLM calls when `session_id` is present and both `usage["output_tokens"]` and `api_duration` are greater than zero.
-- Maintains per-session counters: last TPS, rolling average TPS, peak TPS, total output tokens, and total duration.
-- Injects the latest status snapshot into the active Hermes CLI agent as `agent._tps_snapshot` for status-bar integrations.
-- Provides dependency-free in-process helpers for stats, observability contract metadata, and secret-safe privacy diagnostics.
+- Hooks into `post_api_request` to capture input/output tokens and API duration after each LLM call
+- Maintains per-session stats: last TPS, rolling average, peak TPS, total input/output/total tokens
+- Injects TPS data into the Hermes status bar: `⚕ glm-5.1 │ ⚡114 tok/s │ 20.2K/202.8K │ [█░░░░░░░░░] 10% │ 1m │ ⏲ 28s │ ✓ 4s`
 
 ## Quickstart: Install, Restart, Verify
 
@@ -133,91 +131,335 @@ Display rules for consumers:
 Use `get_tps_stats(session_id)` for read-only session stats inside the same Python process:
 
 ```python
-from tps_counter import get_tps_stats
+from tps_counter import get_tps_stats, get_model_stats
 
+# Session-level stats
 stats = get_tps_stats(session_id)
-# Observed session:
-# {
-#   "calls": 5,
-#   "avg_tps": 98.7,
-#   "last_tps": 114.0,
-#   "peak_tps": 456.2,
-#   "total_output_tokens": 12345,
-#   "total_duration": 125.3,
-# }
+# {"calls": 5, "avg_tps": 98.7, "last_tps": 114.0, "peak_tps": 456.2,
+#  "total_output_tokens": 12345, "total_input_tokens": 45000,
+#  "total_tokens": 57345, "total_duration": 125.3}
+
+# Per-model stats (new)
+model_stats = get_model_stats(session_id)
+# {"gpt-4o": {"avg_tps": 120.5, "peak_tps": 456.2, "calls": 3, "total_output_tokens": 8000, "total_duration": 66.4},
+#  "claude-sonnet": {"avg_tps": 78.3, "peak_tps": 95.1, "calls": 2, "total_output_tokens": 4345, "total_duration": 55.5}}
 ```
 
-For an unknown or unobserved session, the helper returns zero values without `total_duration`:
+### Per-Model Tracking
 
-```python
-{"calls": 0, "avg_tps": 0, "last_tps": 0, "peak_tps": 0, "total_output_tokens": 0}
+When switching models mid-session, per-model stats prevent cross-model pollution. Each model's `avg_tps` and `peak_tps` are tracked independently. Model data is automatically included in `_tps_snapshot["models"]` for status bar integration.
+
+### Session Lifecycle
+
+The plugin automatically manages session state to prevent unbounded memory growth:
+
+- **Event-driven cleanup:** When a session ends (via the `on_session_end` hook), all in-memory state for that session is removed immediately.
+- **LRU eviction:** As a safety net for sessions that don't trigger `on_session_end` (e.g., process killed), the plugin evicts the least-recently-active session when the total exceeds `MAX_SESSIONS` (default: 50). Eviction targets the session with the oldest `turn_start_time`.
+- **Session duration:** `get_tps_stats` returns a `session_duration` field (seconds since session creation) alongside existing metrics.
+
+Both cleanup paths are fully thread-safe via the existing `_STATE_LOCK`.
+
+## No Configuration Required
+
+Works out of the box. No env vars or config needed. All features below are optional — the plugin tracks TPS in-memory and displays it in the status bar with zero configuration.
+
+## REST API
+
+When enabled, the plugin starts a FastAPI server exposing TPS data over HTTP. Enable it with:
+
+```bash
+export TPS_COUNTER_API_ENABLED=1
 ```
 
-`get_tps_stats(session_id)` expects the raw internal `session_id`; privacy redaction is applied to outbound observability payloads, not to `_SESSIONS` lookup correctness.
+Or in TOML (see [Configuration](#configuration)):
 
-## Observability Contract
-
-The machine-readable contract describes what consumers may rely on without scanning live sessions or importing optional server dependencies:
-
-```python
-from tps_counter import get_observability_contract
-
-contract = get_observability_contract()
-assert contract["contract"]["contract_version"] == "1.0.0"
+```toml
+[api]
+enabled = true
 ```
 
-Current contract surfaces:
+The API runs on `127.0.0.1:9127` by default. FastAPI auto-generates interactive docs at `/docs` when the server is running.
 
-| Surface | Availability on this branch | Consumer guidance |
-|---------|-----------------------------|-------------------|
-| `agent._tps_snapshot` | Available | Latest status-bar snapshot on the active CLI agent after successful hooks. Apply freshness and session checks. |
-| `get_tps_stats(session_id)` | Available | In-process read-only helper for one raw session id. Missing sessions return zero values. |
-| `get_observability_contract()` | Available | Static, dependency-free metadata; reading it does not create session state. |
-| `get_privacy_diagnostics()` | Available | Secret-safe privacy mode diagnostics. |
-| REST observability route | Unavailable when the contract marks `available: false` | No REST router is present in this branch; use `get_observability_contract()` instead. |
-| WebSocket stream | Unavailable when the contract marks `available: false` | Do not assume TPS events are emitted; use status snapshots or in-process helpers. |
-| Prometheus exporter | Unavailable when the contract marks `available: false` | Do not scrape plugin-specific metrics until a future contract lists metric names, units, and labels. |
+### Endpoints
 
-The contract includes additive top-level sections for `contract`, `compatibility`, `privacy`, `status_snapshot`, `api`, `websocket`, and `prometheus`. Compatible consumers should ignore unknown fields or sections. Breaking changes require a new major `contract_version`.
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/health` | Health check — verify API and DB are reachable |
+| `GET` | `/api/v1/sessions` | List all sessions with TPS stats |
+| `GET` | `/api/v1/sessions/{session_id}/tps` | TPS stats for a single session |
+| `GET` | `/api/v1/summary` | Aggregated TPS summary across all sessions |
+| `GET` | `/api/v1/events/{session_id}` | Per-call events for a session |
+| `GET` | `/api/v1/trends/{session_id}` | Per-model and per-provider aggregated trends |
+| `GET` | `/metrics` | Prometheus metrics (see [Prometheus](#prometheus)) |
 
-## Privacy Redaction
+### `GET /api/v1/health`
 
-Default behavior is raw/backward-compatible: existing status-bar integrations and raw `snapshot["session_id"]` comparisons continue to work unless privacy mode is enabled.
+```json
+{
+  "status": "ok",
+  "db": "connected"
+}
+```
 
-Configure privacy with these environment variables:
+### `GET /api/v1/sessions`
 
-| Variable | Purpose |
-|----------|---------|
-| `HERMES_TPS_PRIVACY_MODE` | `disabled`/raw-compatible by default; accepts pseudonymized, redacted, or omitted modes (common aliases are normalized by the plugin). |
-| `HERMES_TPS_PRIVACY_SALT` | Secret salt for deterministic pseudonyms. Do not put real secret values in docs, logs, or examples. |
-| `HERMES_TPS_PRIVACY_SCOPE` | Optional grouping scope for pseudonyms; changing it changes pseudonym outputs. |
-| `HERMES_TPS_PRIVACY_FIELDS` | Comma-separated additional identifier-like fields to treat as privacy-covered. Built-ins are `session_id`, `model`, and `provider`. |
-| `HERMES_TPS_PRIVACY_TREATMENTS` | Per-field overrides such as `provider=redacted,tenant_id=omitted`. Valid treatments are `raw`, `pseudonymized`, `redacted`, and `omitted`. |
+Returns an array of all tracked sessions:
 
-Treatment meanings:
+```json
+{
+  "sessions": [
+    {
+      "session_id": "abc123",
+      "call_count": 15,
+      "total_output_tokens": 12345,
+      "total_input_tokens": 45000,
+      "total_duration": 125.3,
+      "peak_tps": 456.2,
+      "last_call_tps": 114.0,
+      "avg_tps": 98.7,
+      "updated_at": "2026-06-16T10:30:00Z"
+    }
+  ]
+}
+```
 
-| Treatment | Behavior |
-|-----------|----------|
-| `raw` | Emit the identifier unchanged. This is the disabled/default behavior. |
-| `pseudonymized` | Emit a deterministic HMAC-SHA256 pseudonym scoped by field and configured scope. |
-| `redacted` | Emit the constant `[redacted]` marker. |
-| `omitted` | Remove the field from outbound payloads when the surface can tolerate omission. |
+### `GET /api/v1/sessions/{session_id}/tps`
 
-Secrets and raw identifiers are not emitted by privacy diagnostics or the observability contract when privacy mode is enabled. Snapshots and debug logs are privacy-treated at outbound boundaries; raw identifiers remain internal for session lookup and TPS aggregation.
+Same response shape as a single session entry above. Returns `404` if the session is not found.
 
-## Troubleshooting
+### `GET /api/v1/summary`
 
-| Symptom | Likely cause | Checks and remediation |
-|---------|--------------|------------------------|
-| No TPS display in the status bar | Plugin not copied/enabled, Hermes not restarted, status-bar patches missing, no successful LLM call yet, or no active CLI instance for injection. | Verify `~/.hermes/plugins/tps-counter/plugin.yaml`; restart Hermes; confirm the hook is `post_api_request`; make a successful LLM call; confirm `hermes_cli._ACTIVE_CLI_INSTANCE` points to the running CLI and the status bar reads `agent._tps_snapshot`. |
-| TPS stats stay zero | The session is unknown/unobserved, the call had `output_tokens <= 0`, `api_duration <= 0`, or `session_id` was missing. | Call `get_tps_stats(raw_session_id)` after a successful generation; check provider usage parsing supplies `usage["output_tokens"]`; check API duration is positive. Unknown sessions intentionally return zero values. |
-| TPS appears briefly but later becomes stale | Consumer renders the last label without checking `updated_monotonic`, or the stale threshold is too long. | Compute `time.monotonic() - snapshot["updated_monotonic"]`; suppress or gray-out values older than the chosen 30-120 second threshold; clear `tps_label` when stale. |
-| TPS from another session appears | The status-bar consumer is not comparing `snapshot["session_id"]` to the active session, or privacy mode changed the snapshot identifier. | Compare against the active session before rendering. If privacy is enabled, apply the same field treatment before comparing; never compare a raw active id to `session_id:pseudonym:...`, `[redacted]`, or an omitted field. |
-| `session_id`, `model`, or `provider` looks pseudonymized/redacted/missing | Privacy mode or `HERMES_TPS_PRIVACY_TREATMENTS` is active. | Inspect `get_observability_contract()["privacy"]` or `get_privacy_diagnostics()` for mode and field treatments. This is expected; salts and raw secrets should not appear in outputs. |
-| REST, WebSocket, or Prometheus integration cannot find an endpoint/exporter | Those optional surfaces are not implemented on this branch and the contract marks them unavailable. | Check `get_observability_contract()`; when `available: false`, use `agent._tps_snapshot`, `get_tps_stats(session_id)`, or `get_observability_contract()` instead. Do not assume route paths or metric names exist. |
-| Plugin registration fails | Wrong plugin location, missing/invalid `plugin.yaml`, Hermes not restarted, hook name mismatch, or loader log errors. | Confirm the copied directory includes `plugin.yaml` with `name: tps-counter`, `version: "1.0.0"`, and `hooks: [post_api_request]`; restart Hermes; inspect plugin-loader logs for import or registration errors. |
-| Status-bar label is always blank even though stats exist | `last_tps <= 0`, stale/session checks suppress it, or render fragments only add non-empty labels. | Inspect `agent._tps_snapshot` in-process; verify `last_tps > 0`, age is below threshold, session matches, and `_get_status_bar_fragments()` appends `snapshot["tps_label"]` when present. |
+```json
+{
+  "total_sessions": 3,
+  "total_calls": 47,
+  "total_tokens": 573450,
+  "average_tps": 102.5
+}
+```
 
-## Default Configuration
+### `GET /api/v1/events/{session_id}`
 
-The plugin works out of the box with privacy redaction disabled for backward compatibility. Set the privacy environment variables only when outbound observability identifiers need pseudonymization, redaction, or omission.
+Query parameters:
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `since` | string | — | ISO 8601 timestamp lower bound |
+| `until` | string | — | ISO 8601 timestamp upper bound |
+| `limit` | int | `100` | Max events to return |
+
+```json
+{
+  "events": [
+    {
+      "id": 1,
+      "session_id": "abc123",
+      "model": "gpt-4o",
+      "provider": "openai",
+      "input_tokens": 1500,
+      "output_tokens": 800,
+      "duration": 2.3,
+      "tps": 347.8,
+      "created_at": "2026-06-16T10:30:00Z"
+    }
+  ]
+}
+```
+
+### `GET /api/v1/trends/{session_id}`
+
+Query parameters:
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `since` | string | — | ISO 8601 timestamp lower bound |
+
+```json
+{
+  "session_id": "abc123",
+  "models": {
+    "gpt-4o": { "avg_tps": 120.5, "peak_tps": 456.2, "calls": 3, "total_output_tokens": 8000, "total_duration": 66.4 }
+  },
+  "providers": {
+    "openai": { "avg_tps": 120.5, "peak_tps": 456.2, "calls": 3, "total_output_tokens": 8000, "total_duration": 66.4 }
+  }
+}
+```
+
+> **Note:** CORS is wide-open (`*`) for local dashboard development. Not suitable for public-facing deployments without a reverse proxy.
+
+## WebSocket
+
+The API server also exposes a WebSocket endpoint for real-time TPS streaming.
+
+**Endpoint:** `ws://127.0.0.1:9127/ws/tps`
+
+The server pushes a JSON message after every LLM call. Clients do not send messages — the connection is receive-only.
+
+### Message Format
+
+```json
+{
+  "type": "tps_update",
+  "data": {
+    "session_id": "abc123",
+    "last_tps": 114.0,
+    "avg_tps": 98.7,
+    "peak_tps": 456.2,
+    "output_tokens": 12345,
+    "input_tokens": 45000,
+    "total_tokens": 57345,
+    "call_count": 15
+  },
+  "timestamp": "2026-06-16T10:30:00.123456+00:00"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | Always `"tps_update"` |
+| `data` | object | Session TPS snapshot (same fields as the REST session endpoint) |
+| `timestamp` | string | ISO 8601 UTC timestamp of the broadcast |
+
+### Example (JavaScript)
+
+```javascript
+const ws = new WebSocket("ws://127.0.0.1:9127/ws/tps");
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+  if (msg.type === "tps_update") {
+    console.log(`${msg.data.session_id}: ${msg.data.last_tps} tok/s`);
+  }
+};
+```
+
+Dead clients are automatically cleaned up. A slow client cannot block broadcasts to other clients.
+
+## Prometheus
+
+When enabled, the plugin exports metrics in Prometheus text exposition format at `/metrics`.
+
+```bash
+export TPS_COUNTER_PROMETHEUS_ENABLED=1
+```
+
+Or in TOML:
+
+```toml
+[prometheus]
+enabled = true
+```
+
+Requires the `prometheus_client` Python package:
+
+```bash
+pip install prometheus_client
+```
+
+### Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `tps_last_call` | Gauge | `session_id` | TPS for the most recent API call |
+| `tps_avg` | Gauge | `session_id` | Rolling average TPS for the session |
+| `tps_peak` | Gauge | `session_id` | Peak TPS observed in this session |
+| `tps_tokens_total` | Counter | `session_id`, `direction` | Total tokens processed (`direction`: `input` or `output`) |
+| `tps_api_calls_total` | Counter | `session_id` | Total API calls recorded |
+| `tps_model_avg` | Gauge | `session_id`, `model` | Average TPS for a specific model |
+| `tps_model_peak` | Gauge | `session_id`, `model` | Peak TPS for a specific model |
+| `tps_provider_avg` | Gauge | `session_id`, `provider` | Average TPS for a specific provider |
+| `tps_provider_peak` | Gauge | `session_id`, `provider` | Peak TPS for a specific provider |
+
+### Prometheus Scrape Config
+
+```yaml
+scrape_configs:
+  - job_name: "tps-counter"
+    static_configs:
+      - targets: ["127.0.0.1:9127"]
+    metrics_path: /metrics
+```
+
+## Configuration
+
+The plugin works with zero configuration. All settings below are optional and have sensible defaults.
+
+### Merge Precedence
+
+Settings are resolved in this order (lowest to highest priority):
+
+1. **Defaults** — built-in values in the plugin
+2. **TOML file** — `~/.hermes/plugins/tps-counter/config.toml`
+3. **Environment variables** — `TPS_COUNTER_*` prefix
+4. **Context overrides** — Hermes plugin context (programmatic)
+
+Higher-priority sources override lower ones.
+
+### TOML Config File
+
+Create `~/.hermes/plugins/tps-counter/config.toml`:
+
+```toml
+# Session tracking
+max_sessions = 50
+db_path = "~/.hermes/plugins/tps-counter/tps.db"
+retention_days = 7
+
+# REST API
+[api]
+enabled = true
+host = "127.0.0.1"
+port = 9127
+
+# Prometheus
+[prometheus]
+enabled = true
+```
+
+### Environment Variables
+
+All env vars use the `TPS_COUNTER_` prefix:
+
+| Env Var | Type | Default | Description |
+|---------|------|---------|-------------|
+| `TPS_COUNTER_MAX_SESSIONS` | int | `50` | LRU eviction threshold for in-memory sessions |
+| `TPS_COUNTER_DB_PATH` | string | `~/.hermes/plugins/tps-counter/tps.db` | Path to SQLite database file |
+| `TPS_COUNTER_RETENTION_DAYS` | int | `7` | Days to retain call events before cleanup |
+| `TPS_COUNTER_API_HOST` | string | `127.0.0.1` | REST API bind address |
+| `TPS_COUNTER_API_PORT` | int | `9127` | REST API port |
+| `TPS_COUNTER_PROMETHEUS_ENABLED` | bool | `false` | Enable Prometheus `/metrics` endpoint |
+| `TPS_COUNTER_API_ENABLED` | bool | `false` | Enable REST API server |
+
+Boolean env vars accept `1`, `true`, `yes`, or `on` (case-insensitive) as truthy values.
+
+### Quick Start
+
+Enable both the API and Prometheus with env vars:
+
+```bash
+export TPS_COUNTER_API_ENABLED=1
+export TPS_COUNTER_PROMETHEUS_ENABLED=1
+# Restart Hermes
+```
+
+Or with a single TOML file:
+
+```toml
+[api]
+enabled = true
+
+[prometheus]
+enabled = true
+```
+
+## Supported Provider Usage Formats
+
+The plugin extracts token counts from multiple provider formats automatically:
+
+| Provider  | Output tokens key      | Input tokens key       |
+|-----------|------------------------|------------------------|
+| Anthropic | `usage.output_tokens`  | `usage.input_tokens`   |
+| OpenAI    | `usage.completion_tokens` | `usage.prompt_tokens` |
+| Google    | `usage.completionTokens` | `usage.promptTokens`  |
+
+Fallback order: primary key is tried first, then alternatives. Unknown formats return 0 without crashing.
