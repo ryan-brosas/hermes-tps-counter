@@ -124,6 +124,12 @@ enabled = true
 
 The API runs on `127.0.0.1:9127` by default. FastAPI auto-generates interactive docs at `/docs` when the server is running.
 
+### Dashboard
+
+When the API is enabled, open `http://<host>:<port>/` (for the default local server: `http://127.0.0.1:9127/`) to view the built-in TPS Dashboard. The dashboard is served by `GET /` and provides live aggregate TPS, total calls/tokens, API health, recent TPS history, session-level rows, and model/provider breakdowns when that data is available.
+
+The page uses the existing `/ws/tps` WebSocket stream for real-time updates and fetches `/api/v1/summary`, `/api/v1/sessions`, `/api/v1/health`, and `/api/v1/health/diagnostics` for initial state. If the WebSocket is unavailable or disconnects, it automatically reconnects with backoff and falls back to REST polling. All CSS and JavaScript are embedded in the page; there are no CDN, font, or external asset dependencies, so it works offline after loading from the local API server.
+
 ### Endpoints
 
 | Method | Path | Description |
