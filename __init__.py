@@ -849,8 +849,12 @@ def register(ctx: Any) -> None:
 
     # Optionally enable Prometheus metrics
     if cfg.prometheus_enabled:
-        from prometheus_metrics import metrics_available
+        from prometheus_metrics import metrics_available, configure as configure_metrics
         if metrics_available():
+            configure_metrics(
+                legacy_session_labels=cfg.prometheus_legacy_session_labels,
+                label_cardinality_cap=cfg.prometheus_label_cardinality_cap,
+            )
             _prometheus_enabled = True
             logger.info("tps-counter: Prometheus metrics enabled at /metrics")
         else:

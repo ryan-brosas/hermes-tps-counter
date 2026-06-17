@@ -155,6 +155,10 @@ def _load_from_toml(path: Optional[Path] = None) -> Dict[str, Any]:
     if isinstance(prom_section, dict):
         if "enabled" in prom_section:
             result.setdefault("prometheus_enabled", prom_section["enabled"])
+        if "legacy_session_labels" in prom_section:
+            result.setdefault("prometheus_legacy_session_labels", prom_section["legacy_session_labels"])
+        if "label_cardinality_cap" in prom_section:
+            result.setdefault("prometheus_label_cardinality_cap", prom_section["label_cardinality_cap"])
 
     return result
 
@@ -243,6 +247,10 @@ def _load_from_ctx(ctx: Any) -> Dict[str, Any]:
     if isinstance(prom_section, dict):
         if "enabled" in prom_section:
             result["prometheus_enabled"] = prom_section["enabled"]
+        if "legacy_session_labels" in prom_section:
+            result["prometheus_legacy_session_labels"] = prom_section["legacy_session_labels"]
+        if "label_cardinality_cap" in prom_section:
+            result["prometheus_label_cardinality_cap"] = prom_section["label_cardinality_cap"]
 
     return result
 
