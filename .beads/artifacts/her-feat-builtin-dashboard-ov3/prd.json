@@ -1,0 +1,75 @@
+{
+  "bead_id": "her-feat-builtin-dashboard-ov3",
+  "type": "feature",
+  "priority": 2,
+  "estimate_minutes": 60,
+  "requirements": [
+    {
+      "id": 1,
+      "text": "Serve a built-in dashboard at the API root path.",
+      "priority": "MUST",
+      "acceptance": "GET / returns HTTP 200 with text/html content containing the TPS dashboard, while GET /docs and existing API routes remain available."
+    },
+    {
+      "id": 2,
+      "text": "Keep the dashboard dependency-free and offline-capable after load.",
+      "priority": "MUST",
+      "acceptance": "Returned HTML contains no external script, stylesheet, CDN, font, or remote asset dependency; all required CSS and JavaScript is embedded or package-local."
+    },
+    {
+      "id": 3,
+      "text": "Use existing live data channels.",
+      "priority": "MUST",
+      "acceptance": "Dashboard JavaScript connects to /ws/tps for real-time TPS updates and does not introduce a new streaming endpoint."
+    },
+    {
+      "id": 4,
+      "text": "Provide REST fallback and initial state loading.",
+      "priority": "MUST",
+      "acceptance": "Dashboard fetches existing /api/v1/summary, /api/v1/sessions, and health/diagnostics endpoints for initial render and can poll REST if WebSocket is unavailable."
+    },
+    {
+      "id": 5,
+      "text": "Show useful monitoring information.",
+      "priority": "MUST",
+      "acceptance": "Page displays connection/API health, aggregate TPS/total call/token information, session rows or cards, recent TPS history/sparkline, and model/provider breakdowns when data exists."
+    },
+    {
+      "id": 6,
+      "text": "Reconnect automatically after WebSocket disconnect.",
+      "priority": "SHOULD",
+      "acceptance": "Client-side code visibly marks the connection as disconnected and retries with a bounded/backoff delay without manual refresh."
+    },
+    {
+      "id": 7,
+      "text": "Be responsive and accessible enough for local operations.",
+      "priority": "SHOULD",
+      "acceptance": "Layout is readable on mobile and desktop widths, uses semantic headings/labels, and does not rely on color alone for critical state."
+    },
+    {
+      "id": 8,
+      "text": "Preserve existing API contracts.",
+      "priority": "MUST",
+      "acceptance": "Existing health, sessions, summary, events, trends, diagnostics, metrics, docs, and WebSocket behavior continue to pass; root route does not shadow existing routes."
+    },
+    {
+      "id": 9,
+      "text": "Keep packaging simple.",
+      "priority": "SHOULD",
+      "acceptance": "Dashboard content is either a small dashboard.py module/string or a single package-local HTML asset loaded by api.py, with no build step."
+    },
+    {
+      "id": 10,
+      "text": "Add tests and documentation for the new root dashboard.",
+      "priority": "MUST",
+      "acceptance": "tests/test_dashboard.py or equivalent covers the root HTML route and README explains how to enable and open the dashboard."
+    }
+  ],
+  "success_criteria": [
+    "GET / serves the built-in dashboard as HTML from the FastAPI app.",
+    "Dashboard HTML is dependency-free and contains no CDN or external asset references.",
+    "Dashboard client code uses /ws/tps for real-time updates and existing /api/v1/* REST endpoints for initial/fallback data.",
+    "Existing API, docs, metrics, and WebSocket routes are not regressed.",
+    "README documents how to open the dashboard after enabling the API."
+  ]
+}

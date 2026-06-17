@@ -1,0 +1,19 @@
+{
+  "bead_id": "her-feat-builtin-dashboard-ov3",
+  "status": "PASS",
+  "requirements_met": [
+    {"requirement": "GET / serves dashboard HTML", "status": "PASS", "evidence": "tests/test_dashboard.py::test_root_serves_dashboard_html passed"},
+    {"requirement": "No external dashboard dependencies", "status": "PASS", "evidence": "tests/test_dashboard.py::test_dashboard_has_no_external_asset_dependencies passed; python import assertion found no http(s) URLs"},
+    {"requirement": "Uses /ws/tps and existing REST endpoints", "status": "PASS", "evidence": "tests/test_dashboard.py::test_dashboard_reuses_existing_live_and_rest_channels passed"},
+    {"requirement": "Reconnect and REST fallback hooks present", "status": "PASS", "evidence": "tests/test_dashboard.py::test_dashboard_contains_reconnect_and_rest_polling_fallback_hooks passed"},
+    {"requirement": "Existing routes preserved", "status": "PASS", "evidence": "tests/test_dashboard.py::test_dashboard_does_not_shadow_existing_routes passed"},
+    {"requirement": "README documents dashboard", "status": "PASS", "evidence": "README includes Dashboard section with GET / and enablement context"},
+    {"requirement": "No test regressions", "status": "PASS", "evidence": "python -m pytest tests/ -v => 313 passed"}
+  ],
+  "verification_commands": [
+    {"command": "python -c \"from dashboard import DASHBOARD_HTML; assert len(DASHBOARD_HTML) > 1000; assert 'https://' not in DASHBOARD_HTML and 'http://' not in DASHBOARD_HTML; assert '/ws/tps' in DASHBOARD_HTML; print(len(DASHBOARD_HTML))\"", "result": "PASS", "output": "15004"},
+    {"command": "python -m pytest tests/test_dashboard.py -v", "result": "PASS", "output": "5 passed in 4.18s"},
+    {"command": "python -m pytest tests/test_api.py tests/test_websocket.py tests/test_dashboard.py -v", "result": "PASS", "output": "46 passed in 36.18s"},
+    {"command": "python -m pytest tests/ -v", "result": "PASS", "output": "313 passed in 17.83s"}
+  ]
+}
