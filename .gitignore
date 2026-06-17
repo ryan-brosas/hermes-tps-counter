@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# bv (beads viewer) local config and caches
+.bv/

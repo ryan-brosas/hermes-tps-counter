@@ -1,0 +1,34 @@
+{
+  "bead_id": "her-fix-missing-alert-impl-r3i",
+  "type": "fix",
+  "priority": 1,
+  "description": "Implement missing TPS threshold alerting code in __init__.py — lost during merge of her-feat-tps-threshold-alerting-how. Tests exist but implementation is absent.",
+  "requirements": [
+    "R1: _ALERT_CONFIG dict with defaults",
+    "R2: _ALERT_HOOK_MANAGER global",
+    "R3: _SessionTPS alert slots",
+    "R4: _evaluate_alert() cold-start auto-threshold",
+    "R5: _evaluate_alert() rolling window evaluation",
+    "R6: Alert state machine (idle → firing → resolved)",
+    "R7: _emit_alert() tps_alert hook emission",
+    "R8: register() reads env vars",
+    "R9: register() registers tps_alert hook",
+    "R10: _on_post_api_request() integrates alert evaluation",
+    "R11: agent._tps_snapshot includes alert fields",
+    "R12: get_tps_stats() includes alert fields",
+    "R13: All 19 threshold alerting tests pass",
+    "R14: No regressions on other 300+ tests",
+    "R15: No breakage of existing features"
+  ],
+  "success_criteria": [
+    "19/19 test_threshold_alerting.py tests pass",
+    "All 340+ tests pass, 0 regressions",
+    "Auto-threshold calculation works",
+    "Alert fires on TPS degradation",
+    "Alert resolves on TPS recovery",
+    "Status bar indicator shows when firing"
+  ],
+  "affected_files": ["__init__.py"],
+  "test_files": ["tests/test_threshold_alerting.py", "tests/test_api.py"],
+  "reference": "Commit acaf285 on feat/her-feat-tps-threshold-alerting-how branch"
+}
