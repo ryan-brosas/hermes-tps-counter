@@ -1,0 +1,69 @@
+{
+  "bead_id": "her-feat-tps-threshold-alerting-how",
+  "verified_at": "2026-06-17T02:20:00+08:00",
+  "requirements_met": [
+    {
+      "id": 1,
+      "requirement": "Configurable TPS threshold via env var or config",
+      "status": "PASS",
+      "evidence": "TPS_THRESHOLD env var read in register(); _ALERT_CONFIG['threshold'] used in _evaluate_alert(); test_fixed_threshold_from_register passes"
+    },
+    {
+      "id": 2,
+      "requirement": "Rolling evaluation window over last N calls",
+      "status": "PASS",
+      "evidence": "TPS_EVAL_WINDOW env var (default 5); recent_tps_samples list maintained; test_rolling_window_size passes"
+    },
+    {
+      "id": 3,
+      "requirement": "Alert state machine: idle/firing/resolved with timestamps",
+      "status": "PASS",
+      "evidence": "alert_state field on _SessionTPS; alert_fired_at/alert_resolved_at timestamps; test_state_transitions_firing_to_resolved and test_alert_timestamps_recorded pass"
+    },
+    {
+      "id": 4,
+      "requirement": "Hook event emission: tps_alert fired on state transitions",
+      "status": "PASS",
+      "evidence": "tps_alert hook registered in register(); _emit_alert() calls ctx._manager.invoke_hook(); test_hook_payload_shape passes"
+    },
+    {
+      "id": 5,
+      "requirement": "Cold-start auto-threshold from first 10 calls",
+      "status": "PASS",
+      "evidence": "cold_start_samples list collects first 10 TPS values; threshold = mean * 0.5; test_cold_start_auto_threshold and test_cold_start_with_varying_tps pass"
+    },
+    {
+      "id": 6,
+      "requirement": "Status bar alert indicator when firing",
+      "status": "PASS",
+      "evidence": "alert_indicator field in _tps_snapshot; '⚠ TPS ALERT' when firing, '' otherwise; test_alert_indicator_when_firing and test_no_indicator_when_idle pass"
+    },
+    {
+      "id": 7,
+      "requirement": "Thread safety under _STATE_LOCK",
+      "status": "PASS",
+      "evidence": "All alert state mutations inside with _STATE_LOCK block; test_concurrent_sessions_no_corruption passes with 5 threads × 12 calls each"
+    },
+    {
+      "id": 8,
+      "requirement": "Pytest tests for all scenarios",
+      "status": "PASS",
+      "evidence": "19 new tests in tests/test_threshold_alerting.py; all pass; 66 total tests pass with 0 regressions"
+    }
+  ],
+  "test_results": {
+    "new_tests": 19,
+    "total_tests": 66,
+    "passed": 66,
+    "failed": 0,
+    "regressions": 0
+  },
+  "files_changed": [
+    "__init__.py",
+    "tests/test_api.py",
+    "tests/test_threshold_alerting.py",
+    "README.md"
+  ],
+  "lines_added": 713,
+  "lines_removed": 9
+}

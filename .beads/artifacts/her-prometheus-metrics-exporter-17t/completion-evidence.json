@@ -1,0 +1,30 @@
+{
+  "bead_id": "her-prometheus-metrics-exporter-17t",
+  "status": "closed",
+  "pr_url": "https://github.com/ryan-brosas/hermes-tps-counter/pull/13",
+  "files_changed": 4,
+  "files_created": ["prometheus_metrics.py", "tests/test_prometheus.py"],
+  "files_modified": ["__init__.py", "api.py"],
+  "tests_new": 25,
+  "tests_total": 174,
+  "tests_passed": 174,
+  "tests_failed": 0,
+  "acceptance_criteria_met": [
+    "GET /metrics returns 200 with Content-Type: text/plain; version=0.0.4; charset=utf-8",
+    "tps_last_call, tps_avg, tps_peak gauges with session_id label",
+    "tps_tokens_total counter with direction label (input/output), tps_api_calls_total counter",
+    "tps_model_avg, tps_model_peak with session_id and model labels",
+    "tps_provider_avg, tps_provider_peak with session_id and provider labels",
+    "Thread-safe: 4-thread concurrent test passes",
+    "prometheus.enabled config option, defaults to false",
+    "/metrics mounted on existing FastAPI app alongside /api/v1/health",
+    "All 149 existing tests pass (backward compatible)",
+    "tests/test_prometheus.py with 25 comprehensive tests"
+  ],
+  "verification_commands": [
+    "pytest tests/test_prometheus.py -v",
+    "pytest tests/ -v",
+    "python -c 'from prometheus_metrics import REGISTRY, update_metrics, generate_metrics; print(\"OK\")'"
+  ],
+  "completed_at": "2026-06-16T03:31:47Z"
+}

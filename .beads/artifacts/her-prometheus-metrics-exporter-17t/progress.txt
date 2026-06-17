@@ -1,0 +1,5 @@
+[2026-06-16] Bead created: her-prometheus-metrics-exporter-17t
+[2026-06-16] PRD written: 10 requirements, 8 success criteria
+[2026-06-16] Decisions logged: 6 decisions (prometheus_client, custom registry, mount on FastAPI, optional dep, inline updates, tps_ prefix)
+[2026-06-16] Plan written: 3 waves, 5 tasks, 2 parallel tasks
+[2026-06-16] Context capsule written: patterns, constraints, file ownership

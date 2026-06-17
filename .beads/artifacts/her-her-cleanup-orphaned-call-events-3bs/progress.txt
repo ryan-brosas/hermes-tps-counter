@@ -1,0 +1,2 @@
+[2026-06-16] Bead created: her-her-cleanup-orphaned-call-events-3bs
+[2026-06-16] PRD written: identified orphaned call_events leak in store.delete(), delete_expired(), and _evict_if_needed()

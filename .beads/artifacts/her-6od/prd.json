@@ -1,0 +1,65 @@
+{
+  "bead_id": "her-6od",
+  "title": "Add configurable call event sampling to bound SQLite write amplification",
+  "type": "feature",
+  "priority": 2,
+  "estimate_minutes": 75,
+  "requirements": [
+    {
+      "id": 1,
+      "text": "Preserve existing behavior by default",
+      "priority": "MUST",
+      "acceptance": "With default config, every valid call event that is currently persisted remains persisted and existing tests/contracts stay compatible."
+    },
+    {
+      "id": 2,
+      "text": "Provide configurable event sampling",
+      "priority": "MUST",
+      "acceptance": "Config supports an explicit sampling mode/rate with validation, documented bounds, and no external dependencies."
+    },
+    {
+      "id": 3,
+      "text": "Keep session aggregates lossless",
+      "priority": "MUST",
+      "acceptance": "last_tps, avg_tps, peak_tps, total tokens, and duration remain based on every valid hook event regardless of historical sampling."
+    },
+    {
+      "id": 4,
+      "text": "Bound hook-path overhead",
+      "priority": "MUST",
+      "acceptance": "Sampling decision uses O(1) in-memory logic and does not require extra SQLite reads before deciding whether to write an event row."
+    },
+    {
+      "id": 5,
+      "text": "Mark sampled history clearly",
+      "priority": "MUST",
+      "acceptance": "Historical export/API/contract metadata can report sampling mode/rate and whether returned call-event history may be incomplete."
+    },
+    {
+      "id": 6,
+      "text": "Count sampled/skipped events",
+      "priority": "SHOULD",
+      "acceptance": "Diagnostics or operational metrics expose how many event rows were skipped due to sampling without leaking sensitive identifiers."
+    },
+    {
+      "id": 7,
+      "text": "Cover configuration and edge cases",
+      "priority": "SHOULD",
+      "acceptance": "Tests cover disabled/default behavior, rate validation, always/never sample boundaries, deterministic decisions, and metadata output."
+    }
+  ],
+  "success_criteria": [
+    "Default configuration persists complete historical call-event rows as before.",
+    "Configured sampling reduces persisted historical rows while keeping aggregate session stats exact.",
+    "Sampling policy is documented in API/export/contract metadata.",
+    "Invalid sampling configuration fails predictably with clear validation errors.",
+    "No regressions in privacy redaction, API response compatibility, or plugin registration."
+  ],
+  "constraints": [
+    "Stdlib only unless explicitly approved.",
+    "Do not implement during bead-production phase.",
+    "Do not duplicate existing persistence, export, privacy, health, rate-limiting, or batch-stats beads.",
+    "Do not run /plan in this phase."
+  ],
+  "wave_count": 0
+}

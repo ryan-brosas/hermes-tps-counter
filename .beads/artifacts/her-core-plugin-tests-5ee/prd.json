@@ -1,0 +1,29 @@
+{
+  "bead_id": "her-core-plugin-tests-5ee",
+  "type": "task",
+  "priority": 2,
+  "title": "Add core plugin behavior tests for TPS calculation, session management, and lifecycle",
+  "estimate_minutes": 60,
+  "requirements": [
+    {"id": 1, "text": "Test _SessionTPS.record() with input/output tokens and duration", "priority": "MUST"},
+    {"id": 2, "text": "Test avg_tps property", "priority": "MUST"},
+    {"id": 3, "text": "Test peak_tps tracking", "priority": "MUST"},
+    {"id": 4, "text": "Test turn_tps and reset_turn()", "priority": "MUST"},
+    {"id": 5, "text": "Test total_tokens property", "priority": "MUST"},
+    {"id": 6, "text": "Test _fmt_tokens static method", "priority": "MUST"},
+    {"id": 7, "text": "Test summary_line() output", "priority": "MUST"},
+    {"id": 8, "text": "Test get_model_stats()", "priority": "MUST"},
+    {"id": 9, "text": "Test get_tps_stats()", "priority": "MUST"},
+    {"id": 10, "text": "Test _get_session() with DB hydration", "priority": "MUST"},
+    {"id": 11, "text": "Test _evict_if_needed()", "priority": "MUST"},
+    {"id": 12, "text": "Test _on_session_end() hook", "priority": "MUST"},
+    {"id": 13, "text": "Test status bar snapshot includes models/providers", "priority": "MUST"},
+    {"id": 14, "text": "Thread safety: concurrent hooks don't corrupt state", "priority": "SHOULD"},
+    {"id": 15, "text": "Edge cases: zero tokens, zero duration, missing session_id", "priority": "SHOULD"}
+  ],
+  "success_criteria": [
+    "pytest tests/test_core.py -v passes with 0 failures",
+    "All 15 requirements have corresponding test methods",
+    "No existing tests regress: pytest tests/ -v all green"
+  ]
+}

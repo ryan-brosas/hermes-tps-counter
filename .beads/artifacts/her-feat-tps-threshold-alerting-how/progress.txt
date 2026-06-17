@@ -1,0 +1,4 @@
+[2026-06-17] Bead created: her-feat-tps-threshold-alerting-how
+[2026-06-17] Type: feature | Priority: P2 | Estimate: 90 min
+[2026-06-17] PRD + decisions artifacts created
+[2026-06-17] Next: /plan her-feat-tps-threshold-alerting-how

@@ -1,0 +1,83 @@
+{
+  "bead_id": "her-prometheus-metrics-exporter-17t",
+  "title": "Prometheus metrics exporter endpoint for TPS data",
+  "type": "feature",
+  "priority": 2,
+  "estimate_minutes": 60,
+  "created_at": "2026-06-16",
+  "requirements": [
+    {
+      "id": 1,
+      "description": "/metrics endpoint returns Prometheus text format",
+      "priority": "MUST",
+      "acceptance": "GET /metrics returns 200 with Content-Type text/plain; version=0.0.4; charset=utf-8"
+    },
+    {
+      "id": 2,
+      "description": "Gauge metrics for session TPS (last_call, avg, peak)",
+      "priority": "MUST",
+      "acceptance": "tps_last_call, tps_avg, tps_peak gauges with session_id label"
+    },
+    {
+      "id": 3,
+      "description": "Counter metrics for tokens and API calls",
+      "priority": "MUST",
+      "acceptance": "tps_tokens_total counter with direction label, tps_api_calls_total counter"
+    },
+    {
+      "id": 4,
+      "description": "Per-model gauge metrics",
+      "priority": "MUST",
+      "acceptance": "tps_model_avg, tps_model_peak with session_id and model labels"
+    },
+    {
+      "id": 5,
+      "description": "Per-provider gauge metrics",
+      "priority": "MUST",
+      "acceptance": "tps_provider_avg, tps_provider_peak with session_id and provider labels"
+    },
+    {
+      "id": 6,
+      "description": "Thread-safe metric updates",
+      "priority": "MUST",
+      "acceptance": "Concurrent hook calls update metrics without race conditions"
+    },
+    {
+      "id": 7,
+      "description": "Configurable enable/disable",
+      "priority": "SHOULD",
+      "acceptance": "prometheus.enabled in plugin config, defaults to false"
+    },
+    {
+      "id": 8,
+      "description": "Mount on existing FastAPI app",
+      "priority": "SHOULD",
+      "acceptance": "/metrics on same port as /api/v1/* when API enabled"
+    },
+    {
+      "id": 9,
+      "description": "Backward compatible",
+      "priority": "MUST",
+      "acceptance": "All existing tests pass"
+    },
+    {
+      "id": 10,
+      "description": "New tests for Prometheus metrics",
+      "priority": "MUST",
+      "acceptance": "tests/test_prometheus.py all green"
+    }
+  ],
+  "success_criteria": [
+    "GET /metrics returns Prometheus text format with HELP/TYPE metadata",
+    "Session TPS gauges reflect current state after hook calls",
+    "Token counters increment correctly",
+    "Per-model and per-provider metrics appear with correct labels",
+    "Plugin works when prometheus_client is not installed",
+    "All existing tests pass",
+    "New tests achieve full coverage"
+  ],
+  "files": {
+    "allowed": ["__init__.py", "api.py", "tests/", "store.py"],
+    "forbidden": [".pi/", "README.md", "HERMES.md"]
+  }
+}

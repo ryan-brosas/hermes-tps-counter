@@ -1,0 +1,88 @@
+{
+  "bead_id": "her-websocket-tps-streaming-90p",
+  "type": "feature",
+  "priority": 2,
+  "estimate_minutes": 90,
+  "requirements": [
+    {
+      "id": 1,
+      "text": "WebSocket endpoint at /ws/tps in FastAPI app",
+      "priority": "MUST",
+      "acceptance": "Client can connect and receive JSON messages"
+    },
+    {
+      "id": 2,
+      "text": "ConnectionManager with connect/disconnect/broadcast",
+      "priority": "MUST",
+      "acceptance": "Tracks N clients, broadcasts to all, handles drops"
+    },
+    {
+      "id": 3,
+      "text": "Broadcast TPS snapshot on each hook call",
+      "priority": "MUST",
+      "acceptance": "Every _on_post_api_request triggers broadcast to all clients"
+    },
+    {
+      "id": 4,
+      "text": "JSON message format with type field",
+      "priority": "MUST",
+      "acceptance": "Messages are valid JSON with type: tps_update"
+    },
+    {
+      "id": 5,
+      "text": "Thread-safe ConnectionManager",
+      "priority": "MUST",
+      "acceptance": "Concurrent hook calls dont corrupt client set"
+    },
+    {
+      "id": 6,
+      "text": "Graceful disconnect handling",
+      "priority": "MUST",
+      "acceptance": "Client disconnect doesnt crash server or leak resources"
+    },
+    {
+      "id": 7,
+      "text": "Tests for ConnectionManager",
+      "priority": "MUST",
+      "acceptance": "Unit tests for connect, disconnect, broadcast, error handling"
+    },
+    {
+      "id": 8,
+      "text": "Tests for WebSocket endpoint",
+      "priority": "MUST",
+      "acceptance": "Integration test: connect, receive message, disconnect"
+    },
+    {
+      "id": 9,
+      "text": "Backward compatible with existing tests",
+      "priority": "MUST",
+      "acceptance": "All existing tests pass without modification"
+    },
+    {
+      "id": 10,
+      "text": "Optional channel filtering",
+      "priority": "SHOULD",
+      "acceptance": "Client can subscribe to specific session_id"
+    },
+    {
+      "id": 11,
+      "text": "Heartbeat/ping for stale connection detection",
+      "priority": "SHOULD",
+      "acceptance": "Dead connections are detected and removed"
+    },
+    {
+      "id": 12,
+      "text": "Rate-limit broadcasts",
+      "priority": "SHOULD",
+      "acceptance": "Slow clients dont cause memory buildup"
+    }
+  ],
+  "success_criteria": [
+    "Client can connect to ws://host:port/ws/tps and receive JSON TPS updates",
+    "Multiple concurrent clients receive the same broadcast",
+    "Client disconnect doesnt crash the server",
+    "All existing tests pass: pytest tests/ -x",
+    "New WebSocket tests pass: pytest tests/test_websocket.py -x",
+    "Thread-safe: concurrent hook calls with multiple clients dont corrupt state"
+  ]
+}

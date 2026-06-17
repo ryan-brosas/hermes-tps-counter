@@ -1,0 +1,2 @@
+[2026-06-17] Bead created: her-feat-batch-session-stats-ojy
+[2026-06-17] Plan phase complete: plan.md, tasks.md, context-capsule.md created

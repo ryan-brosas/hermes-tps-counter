@@ -1,0 +1,21 @@
+{
+  "bead_id": "her-feat-historical-tps-export-s3i",
+  "completed_at": "2026-06-16T17:58:48Z",
+  "requirements_met": [
+    {"id": 1, "requirement": "Provide a versioned historical export endpoint", "status": "PASS", "evidence": "GET /api/v1/export/history registered in create_app"},
+    {"id": 2, "requirement": "Keep every export explicitly bounded", "status": "PASS", "evidence": "Default limit=100, max_limit=1000, enforced via min(limit, max_limit)"},
+    {"id": 3, "requirement": "Include both session summary and per-call event data", "status": "PASS", "evidence": "Response contains sessions[] and events[] arrays"},
+    {"id": 4, "requirement": "Preserve local-only/default API behavior", "status": "PASS", "evidence": "All 84 tests pass, zero regressions"},
+    {"id": 5, "requirement": "Handle empty results and unavailable stores", "status": "PASS", "evidence": "503 for store=None, 200 with empty arrays for no data"},
+    {"id": 6, "requirement": "Support JSON as primary format", "status": "PASS", "evidence": "ExportResponse with metadata, sessions, events"},
+    {"id": 7, "requirement": "Optionally support CSV", "status": "PASS", "evidence": "format=csv returns text/csv with stdlib csv module"},
+    {"id": 8, "requirement": "Reuse indexed store access patterns", "status": "PASS", "evidence": "Bounded SQL with LIMIT, no load_all() for events"},
+    {"id": 9, "requirement": "Validate and normalize query parameters", "status": "PASS", "evidence": "422 for invalid limit, 400 for unsupported format"},
+    {"id": 10, "requirement": "Document and test the feature", "status": "PASS", "evidence": "README has export section, 24 focused tests"}
+  ],
+  "test_results": {
+    "export_tests": "24 passed",
+    "full_regression": "84 passed, 0 failed",
+    "files_changed": 6
+  }
+}

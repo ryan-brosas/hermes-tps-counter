@@ -1,0 +1,24 @@
+2026-06-17T03:43:08+08:00 — /brainstorm completed by Phanes.
+- Reviewed project memory, HERMES operator guide, current br/bv state, and existing open/closed bead titles.
+- Existing in-progress beads are monolith decomposition and batch session stats; this bead does not continue either.
+- Existing closed beads already cover persistence, call_events, historical export, REST/WebSocket/dashboard, Prometheus, health diagnostics, API rate limiting, privacy, docs, config, and operational health metrics.
+- Selected a distinct operational scalability gap: bound SQLite write amplification from per-call event persistence while preserving lossless aggregate TPS stats.
+
+2026-06-17T03:43:08+08:00 — /create completed by Phanes.
+- Created bead: her-6od
+- Title: Add configurable call event sampling to bound SQLite write amplification
+- Type: feature
+- Priority: P2
+- Wrote PRD artifacts only: prd.md, prd.json, decisions.md, progress.txt
+- Wave count: 0 (planning intentionally deferred to bead-fix)
+
+2026-06-16T20:46:31Z — /ship completed by Daedalus.
+- Claimed bead with `br update her-6od --claim --actor daedalus --json`.
+- Followed wave plan from context-capsule.md, plan.md, and tasks.md.
+- Implemented opt-in deterministic event-history sampling policy in `__init__.py` with `HERMES_TPS_EVENT_SAMPLING_MODE` and `HERMES_TPS_EVENT_SAMPLING_RATE`.
+- Added process-local kept/skipped diagnostics and event sampling metadata to `get_observability_contract()`.
+- Preserved lossless aggregate TPS updates by recording `_SessionTPS` before sampling decisions.
+- Added `tests/test_event_sampling.py` and README documentation.
+- Updated bead metadata acceptance criteria after `br lint` flagged the structured field missing.
+- Verification: focused sampling tests 29 passed; hook/API/privacy tests 32 passed; full suite 132 passed; br lint passed; bv triage succeeded.
+- Workflow warning: `br doctor --json` reports a recoverable beads DB integrity anomaly and stale lock; source tests and br write probe passed.

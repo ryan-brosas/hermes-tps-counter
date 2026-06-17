@@ -1,0 +1,3 @@
+[2026-06-16] Bead created: her-her-readme-api-ws-prom-config-6y0
+[2026-06-16] PRD written — documenting REST API, WebSocket, Prometheus, and config in README
+[2026-06-16] Decisions written — README-only docs, table-based API reference

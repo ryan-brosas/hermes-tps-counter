@@ -1,0 +1,66 @@
+{
+  "bead_id": "her-feat-status-snapshot-freshness-mdz",
+  "type": "feature",
+  "priority": 2,
+  "estimate_minutes": 45,
+  "title": "Add TPS status snapshot freshness metadata to prevent stale status bar display",
+  "requirements": [
+    {
+      "id": 1,
+      "text": "Preserve the existing _tps_snapshot data contract.",
+      "priority": "MUST",
+      "acceptance": "Existing keys and values used by current tests and README examples remain available after a valid post_api_request hook call."
+    },
+    {
+      "id": 2,
+      "text": "Add machine-readable freshness metadata to every injected status snapshot.",
+      "priority": "MUST",
+      "acceptance": "A new snapshot includes an update timestamp suitable for stale-age calculation, preferably both updated_at/wall-clock seconds and updated_monotonic or equivalent monotonic timing input."
+    },
+    {
+      "id": 3,
+      "text": "Add source identity to the snapshot.",
+      "priority": "MUST",
+      "acceptance": "A new snapshot includes session_id and/or a clearly named source identifier matching the post_api_request session that produced the data."
+    },
+    {
+      "id": 4,
+      "text": "Enable downstream stale-status suppression without plugin-side background work.",
+      "priority": "MUST",
+      "acceptance": "Status-bar consumers can determine current age from snapshot fields; the plugin does not create background threads, timers, or polling loops."
+    },
+    {
+      "id": 5,
+      "text": "Keep hook execution safe and lightweight.",
+      "priority": "MUST",
+      "acceptance": "Freshness metadata is populated in the existing post_api_request path using constant-time operations and does not introduce unbounded memory growth."
+    },
+    {
+      "id": 6,
+      "text": "Cover freshness behavior with tests.",
+      "priority": "MUST",
+      "acceptance": "Tests assert freshness fields exist, are numeric/comparable, correspond to the update event, and do not break existing snapshot assertions."
+    },
+    {
+      "id": 7,
+      "text": "Document the freshness contract.",
+      "priority": "SHOULD",
+      "acceptance": "README or integration docs describe the new fields and recommend how status-bar consumers should treat stale or session-mismatched snapshots."
+    },
+    {
+      "id": 8,
+      "text": "Include migration notes for any new public semantics.",
+      "priority": "SHOULD",
+      "acceptance": "Documentation states that fields are additive and backward compatible; any consumer-side stale threshold is described as configurable or implementation-defined."
+    }
+  ],
+  "success_criteria": [
+    "_tps_snapshot includes additive freshness metadata on every successful TPS snapshot injection.",
+    "_tps_snapshot includes source identity for the session that produced the snapshot.",
+    "Existing status snapshot fields remain present and semantically unchanged.",
+    "No background threads, timers, or unbounded storage are introduced.",
+    "Documentation explains how status-bar consumers should ignore stale or session-mismatched TPS snapshots.",
+    "Relevant hook, API, and session tests pass.",
+    "Full plugin test suite passes in the implementation phase."
+  ]
+}

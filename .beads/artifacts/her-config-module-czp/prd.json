@@ -1,0 +1,32 @@
+{
+  "bead_id": "her-config-module-czp",
+  "type": "task",
+  "priority": 2,
+  "title": "Centralized configuration module with typed defaults, env var overrides, and config file support",
+  "requirements": [
+    {"id": "R1", "text": "config.py module with TPSConfig dataclass", "priority": "MUST"},
+    {"id": "R2", "text": "get_config() function returning merged config singleton", "priority": "MUST"},
+    {"id": "R3", "text": "Environment variable overrides via TPS_COUNTER_ prefix", "priority": "MUST"},
+    {"id": "R4", "text": "Optional TOML config file at ~/.hermes/plugins/tps-counter/config.toml", "priority": "MUST"},
+    {"id": "R5", "text": "Merge precedence: defaults < TOML < env vars < ctx overrides", "priority": "MUST"},
+    {"id": "R6", "text": "All current hardcoded values preserved as defaults", "priority": "MUST"},
+    {"id": "R7", "text": "__init__.py uses config module instead of hardcoded values", "priority": "MUST"},
+    {"id": "R8", "text": "store.py accepts retention from config", "priority": "MUST"},
+    {"id": "R9", "text": "Thread-safe lazy initialization", "priority": "MUST"},
+    {"id": "R10", "text": "Config validation with clear error messages", "priority": "SHOULD"},
+    {"id": "R11", "text": "Auto-create config directory if missing", "priority": "SHOULD"},
+    {"id": "R12", "text": "Comprehensive tests for all config paths", "priority": "MUST"}
+  ],
+  "success_criteria": [
+    "All 5 previously hardcoded values accessible via config",
+    "TPS_COUNTER_MAX_SESSIONS=100 env var overrides default",
+    "TOML config file loaded if present, skipped if absent",
+    "Existing tests pass without modification",
+    "New tests cover all merge paths",
+    "Zero new external dependencies"
+  ],
+  "files": {
+    "create": ["config.py", "tests/test_config.py"],
+    "modify": ["__init__.py", "store.py"]
+  }
+}

@@ -1,0 +1,95 @@
+{
+  "bead_id": "her-6od",
+  "title": "Add configurable call event sampling to bound SQLite write amplification",
+  "completed_at": "2026-06-16T20:46:31Z",
+  "actor": "daedalus",
+  "status": "implemented_verified_pending_close_at_time_of_evidence_write",
+  "files_changed": [
+    "__init__.py",
+    "tests/test_event_sampling.py",
+    "README.md",
+    ".beads/artifacts/her-6od/solve-ledger.md",
+    ".beads/artifacts/her-6od/progress.txt",
+    ".beads/issues.jsonl"
+  ],
+  "implementation_summary": [
+    "Added stdlib-only event sampling configuration constants HERMES_TPS_EVENT_SAMPLING_MODE and HERMES_TPS_EVENT_SAMPLING_RATE.",
+    "Added _EventSamplingPolicy with disabled/default lossless behavior, validated [0.0, 1.0] rates, disabled/enabled aliases, and deterministic cadence keep/drop decisions.",
+    "Added process-local event sampling kept/skipped counters and secret-safe get_event_sampling_diagnostics().",
+    "Integrated sampling after _SessionTPS.record() in _on_post_api_request so aggregate stats remain lossless before any historical persistence decision.",
+    "Added additive event_sampling metadata to get_observability_contract().",
+    "Documented operator configuration, boundary behavior, completeness semantics, and branch limitation that no SQLite call_events insertion surface exists here."
+  ],
+  "requirements_met": {
+    "default_backward_compatibility": {
+      "status": "met",
+      "evidence": "Default policy disabled, rate 1.0, event_history_complete true; full regression suite passed."
+    },
+    "configurable_event_sampling": {
+      "status": "met",
+      "evidence": "Mode aliases and rates validated by tests/test_event_sampling.py::TestConfigParsing."
+    },
+    "lossless_session_aggregates": {
+      "status": "met",
+      "evidence": "tests/test_event_sampling.py::TestAggregateSeparation asserted calls/tokens/TPS remain complete when sampling rate is 0.5."
+    },
+    "bounded_hook_path_overhead": {
+      "status": "met",
+      "evidence": "Decision logic is in-memory cadence over process-local counter, stdlib-only, no SQLite reads or random.random()."
+    },
+    "sampled_history_metadata": {
+      "status": "met",
+      "evidence": "get_observability_contract()[\"event_sampling\"] includes mode, rate, strategy, event_history_complete, aggregate_tps_lossless, diagnostics, and env vars."
+    },
+    "skipped_event_counts_privacy_safe": {
+      "status": "met",
+      "evidence": "get_event_sampling_diagnostics() and contract diagnostics expose kept/skipped counts only; privacy tests assert no raw session/model/provider identifiers."
+    },
+    "configuration_edge_tests": {
+      "status": "met",
+      "evidence": "tests/test_event_sampling.py covers disabled/default, aliases, invalid values, 0.0/1.0 boundaries, deterministic cadence, metadata, privacy, and concurrency."
+    }
+  },
+  "verification_commands": [
+    {
+      "command": "python3 -m pytest tests/test_event_sampling.py -v",
+      "exit_code": 0,
+      "result": "29 passed in 0.14s"
+    },
+    {
+      "command": "python3 -m pytest tests/test_hook.py tests/test_api.py tests/test_privacy.py -v",
+      "exit_code": 0,
+      "result": "32 passed in 0.05s"
+    },
+    {
+      "command": "python3 -m pytest tests/ -v",
+      "exit_code": 0,
+      "result": "132 passed in 0.30s"
+    },
+    {
+      "command": "br lint her-6od --json",
+      "exit_code": 0,
+      "result": "{\"total\":0,\"issues\":0,\"results\":[]}"
+    },
+    {
+      "command": "bv --robot-triage",
+      "exit_code": 0,
+      "result": "completed; her-6od remains in progress before close, no blockers reported"
+    },
+    {
+      "command": "br doctor --json",
+      "exit_code": 1,
+      "result": "recoverable workspace health warning: database disk image malformed in events table; stale .beads/.write.lock; db.write_probe succeeded. Recorded as workflow hygiene warning."
+    }
+  ],
+  "blast_radius_covered": {
+    "source": ["__init__.py"],
+    "tests": ["tests/test_event_sampling.py", "tests/test_hook.py", "tests/test_api.py", "tests/test_privacy.py", "tests/"],
+    "docs": ["README.md"],
+    "artifacts": [".beads/artifacts/her-6od/solve-ledger.md", ".beads/artifacts/her-6od/progress.txt", ".beads/artifacts/her-6od/completion-evidence.json"]
+  },
+  "known_warnings": [
+    "No historical SQLite call_events insertion surface exists on this branch; sampling gate is implemented as policy/counters/metadata and documented for a future insertion seam.",
+    "br doctor reports a recoverable pre-existing beads DB integrity anomaly unrelated to source verification."
+  ]
+}

@@ -1,0 +1,75 @@
+{
+  "bead_id": "her-feat-operational-health-metrics-3go",
+  "type": "feature",
+  "priority": 2,
+  "estimate_minutes": 60,
+  "requirements": [
+    {
+      "id": 1,
+      "text": "Add counter usage_extraction_failures_total for malformed usage dicts",
+      "priority": "MUST",
+      "acceptance": "Counter increments when _extract_usage returns (0,0) for non-empty input; visible in /metrics output"
+    },
+    {
+      "id": 2,
+      "text": "Add counter db_write_errors_total for _persist_state exceptions",
+      "priority": "MUST",
+      "acceptance": "Counter increments when _persist_state catches an exception; visible in /metrics output"
+    },
+    {
+      "id": 3,
+      "text": "Add counter db_read_errors_total for _hydrate_from_db exceptions",
+      "priority": "MUST",
+      "acceptance": "Counter increments when _hydrate_from_db catches an exception; visible in /metrics output"
+    },
+    {
+      "id": 4,
+      "text": "Add counter ws_broadcast_failures_total for failed WebSocket sends",
+      "priority": "MUST",
+      "acceptance": "Counter increments per failed client in ConnectionManager._safe_send; visible in /metrics output"
+    },
+    {
+      "id": 5,
+      "text": "Add counter ws_dead_clients_total for dead client removals",
+      "priority": "MUST",
+      "acceptance": "Counter increments when a dead client is removed in ConnectionManager._safe_send; visible in /metrics output"
+    },
+    {
+      "id": 6,
+      "text": "Add gauge ws_active_connections for current WebSocket client count",
+      "priority": "MUST",
+      "acceptance": "Gauge reflects ConnectionManager.count; visible in /metrics output"
+    },
+    {
+      "id": 7,
+      "text": "All new metrics use existing custom REGISTRY",
+      "priority": "MUST",
+      "acceptance": "New metrics registered in _init_metrics() alongside existing metrics"
+    },
+    {
+      "id": 8,
+      "text": "Thread-safe counter increments",
+      "priority": "MUST",
+      "acceptance": "Counter .inc() calls safe for concurrent hook calls"
+    },
+    {
+      "id": 9,
+      "text": "Tests for all new metrics",
+      "priority": "MUST",
+      "acceptance": "Each new metric has at least one test verifying increment/set behavior"
+    },
+    {
+      "id": 10,
+      "text": "Backward compatible with existing tests and Prometheus output",
+      "priority": "MUST",
+      "acceptance": "Existing tests pass; existing /metrics output unchanged"
+    }
+  ],
+  "success_criteria": [
+    "All 6 new metrics visible in /metrics output with HELP and TYPE metadata",
+    "Error counters increment when error conditions occur",
+    "ws_active_connections gauge tracks connection count",
+    "All existing tests pass",
+    "No regressions in existing Prometheus output"
+  ]
+}

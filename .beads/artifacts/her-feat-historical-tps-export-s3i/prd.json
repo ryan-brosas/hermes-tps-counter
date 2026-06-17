@@ -1,0 +1,75 @@
+{
+  "bead_id": "her-feat-historical-tps-export-s3i",
+  "type": "feature",
+  "priority": 2,
+  "estimate_minutes": 90,
+  "requirements": [
+    {
+      "id": 1,
+      "text": "Provide a versioned historical export endpoint.",
+      "priority": "MUST",
+      "acceptance": "A new endpoint such as GET /api/v1/export/history is registered by api.create_app and returns persisted historical TPS data without altering existing endpoints."
+    },
+    {
+      "id": 2,
+      "text": "Keep every export explicitly bounded.",
+      "priority": "MUST",
+      "acceptance": "Requests must specify safe bounds through session_id, since, until, and/or limit; default and maximum limits prevent unbounded SQLite reads or large in-memory responses."
+    },
+    {
+      "id": 3,
+      "text": "Include both session summary and per-call event data when requested.",
+      "priority": "MUST",
+      "acceptance": "JSON responses can contain sessions data from session_tps and events data from call_events, with fields matching existing API semantics."
+    },
+    {
+      "id": 4,
+      "text": "Preserve local-only/default API behavior and existing contracts.",
+      "priority": "MUST",
+      "acceptance": "All existing API, diagnostics, metrics, and WebSocket tests continue to pass; no existing response model or status code is intentionally changed."
+    },
+    {
+      "id": 5,
+      "text": "Handle empty results and unavailable stores predictably.",
+      "priority": "MUST",
+      "acceptance": "Store unavailability returns 503; valid bounded queries with no matching data return a documented empty export response or documented 404 behavior, consistently covered by tests."
+    },
+    {
+      "id": 6,
+      "text": "Support JSON as the primary offline-analysis format.",
+      "priority": "MUST",
+      "acceptance": "JSON response contains stable metadata such as bounds, counts, generated timestamp, and arrays/objects suitable for direct notebook or dashboard import."
+    },
+    {
+      "id": 7,
+      "text": "Optionally support CSV without new dependencies.",
+      "priority": "SHOULD",
+      "acceptance": "If implemented, format=csv or equivalent returns text/csv with documented columns and bounded row count; unsupported formats return 400."
+    },
+    {
+      "id": 8,
+      "text": "Reuse indexed store access patterns.",
+      "priority": "MUST",
+      "acceptance": "Implementation uses the existing (session_id, created_at) event index or similarly bounded SQL; it does not call load_all() for large exports unless the query is safely constrained."
+    },
+    {
+      "id": 9,
+      "text": "Validate and normalize query parameters.",
+      "priority": "MUST",
+      "acceptance": "Invalid limits, unsupported formats, malformed time bounds, or contradictory filters return 400/422 with useful details rather than silently exporting unexpected data."
+    },
+    {
+      "id": 10,
+      "text": "Document and test the feature.",
+      "priority": "MUST",
+      "acceptance": "README documents endpoint path, parameters, JSON/CSV examples if applicable, bounds, empty-result behavior, and representative tests cover the expected behavior."
+    }
+  ],
+  "success_criteria": [
+    "Historical export endpoint returns bounded JSON for seeded session and event data.",
+    "Export requests cannot perform unbounded reads and tests cover missing bounds, default limit behavior, max limit behavior, and invalid limit handling.",
+    "Existing REST, diagnostics, metrics, and WebSocket endpoints are not regressed.",
+    "Store-unavailable and empty-result behavior is documented and tested.",
+    "README documents endpoint path, parameters, response shape, examples, bounds, and offline-analysis/dashboard-import usage."
+  ]
+}

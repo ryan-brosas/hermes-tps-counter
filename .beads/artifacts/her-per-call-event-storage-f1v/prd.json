@@ -1,0 +1,84 @@
+{
+  "bead_id": "her-per-call-event-storage-f1v",
+  "type": "feature",
+  "priority": 2,
+  "title": "Per-call TPS event storage with time-series queries",
+  "created": "2026-06-16",
+  "estimate_minutes": 90,
+  "requirements": [
+    {
+      "id": 1,
+      "description": "call_events table with per-call TPS data",
+      "priority": "MUST",
+      "acceptance": "Table exists with columns: id, session_id, model, provider, input_tokens, output_tokens, duration, tps, created_at"
+    },
+    {
+      "id": 2,
+      "description": "Auto-record each API call as an event",
+      "priority": "MUST",
+      "acceptance": "hook writes a row to call_events in addition to session_tps UPSERT"
+    },
+    {
+      "id": 3,
+      "description": "Time-range query method",
+      "priority": "MUST",
+      "acceptance": "store.load_events(session_id, since, until) returns events in range"
+    },
+    {
+      "id": 4,
+      "description": "Aggregation query methods",
+      "priority": "MUST",
+      "acceptance": "aggregate_by_model and aggregate_by_provider return grouped stats"
+    },
+    {
+      "id": 5,
+      "description": "REST API: GET /api/v1/events/{session_id}",
+      "priority": "MUST",
+      "acceptance": "Returns list of events with optional since/until query params"
+    },
+    {
+      "id": 6,
+      "description": "REST API: GET /api/v1/trends/{session_id}",
+      "priority": "MUST",
+      "acceptance": "Returns per-model and per-provider aggregated trends"
+    },
+    {
+      "id": 7,
+      "description": "Auto-expiry of old events",
+      "priority": "MUST",
+      "acceptance": "Events older than retention period are deleted on write"
+    },
+    {
+      "id": 8,
+      "description": "Configurable retention period",
+      "priority": "SHOULD",
+      "acceptance": "retention_days in plugin config, defaults to 7"
+    },
+    {
+      "id": 9,
+      "description": "Thread-safe concurrent writes",
+      "priority": "MUST",
+      "acceptance": "Multiple threads writing events simultaneously don't corrupt data"
+    },
+    {
+      "id": 10,
+      "description": "Backward compatible with existing tests",
+      "priority": "MUST",
+      "acceptance": "All existing tests still pass"
+    }
+  ],
+  "success_criteria": [
+    "call_events table exists and schema version is 3",
+    "Each hook call records an event row",
+    "Time-range query returns correct subset",
+    "Model/provider aggregation returns grouped stats",
+    "REST API endpoints return correct data",
+    "Old events are auto-expired",
+    "All existing tests pass",
+    "New tests achieve >90% coverage of new code"
+  ],
+  "files": {
+    "allowed": ["store.py", "api.py", "__init__.py", "tests/"],
+    "forbidden": [".pi/", "README.md", "HERMES.md"]
+  }
+}

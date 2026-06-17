@@ -1,0 +1,80 @@
+{
+  "bead_id": "her-feat-tps-threshold-alerting-how",
+  "type": "feature",
+  "priority": 2,
+  "title": "Add configurable TPS threshold alerting with degradation detection and hook event emission",
+  "created": "2026-06-17",
+  "estimate_minutes": 90,
+  "requirements": [
+    {
+      "id": "R1",
+      "description": "Configurable TPS threshold via env var or config",
+      "priority": "MUST",
+      "acceptance": "TPS_THRESHOLD=50 hermes sets threshold to 50 tok/s"
+    },
+    {
+      "id": "R2",
+      "description": "Rolling evaluation window over last N calls",
+      "priority": "MUST",
+      "acceptance": "Evaluates TPS over last 5 calls (configurable via TPS_EVAL_WINDOW)"
+    },
+    {
+      "id": "R3",
+      "description": "Alert state machine: idle → firing → resolved",
+      "priority": "MUST",
+      "acceptance": "State transitions tracked with timestamps"
+    },
+    {
+      "id": "R4",
+      "description": "Hook event emission on state transitions",
+      "priority": "MUST",
+      "acceptance": "tps_alert hook fires with {session_id, state, tps, threshold, timestamp}"
+    },
+    {
+      "id": "R5",
+      "description": "Cold-start auto-threshold from first 10 calls",
+      "priority": "SHOULD",
+      "acceptance": "Threshold = baseline * 0.5 after 10 calls"
+    },
+    {
+      "id": "R6",
+      "description": "Status bar alert indicator",
+      "priority": "SHOULD",
+      "acceptance": "Status bar shows ⚠ when alert is firing"
+    },
+    {
+      "id": "R7",
+      "description": "Thread safety under _STATE_LOCK",
+      "priority": "MUST",
+      "acceptance": "All state mutations protected by existing lock"
+    },
+    {
+      "id": "R8",
+      "description": "Pytest tests for all scenarios",
+      "priority": "MUST",
+      "acceptance": "pytest tests/test_threshold_alerting.py -v all pass"
+    }
+  ],
+  "success_criteria": [
+    "TPS threshold configurable via env var",
+    "Alert fires when rolling TPS drops below threshold",
+    "Alert resolves when TPS recovers",
+    "Cold-start auto-threshold works",
+    "All existing tests pass (no regressions)",
+    "New tests cover all state transitions"
+  ],
+  "files_allowed": [
+    "__init__.py",
+    "README.md",
+    "tests/test_hook.py",
+    "tests/test_threshold_alerting.py"
+  ],
+  "files_forbidden": [
+    ".beads/beads.db",
+    ".env.local",
+    "credentials",
+    "plan.md",
+    "tasks.md",
+    "context-capsule.md"
+  ]
+}

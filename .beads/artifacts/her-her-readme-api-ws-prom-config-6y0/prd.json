@@ -1,0 +1,51 @@
+{
+  "bead_id": "her-her-readme-api-ws-prom-config-6y0",
+  "type": "docs",
+  "priority": 3,
+  "estimate_minutes": 45,
+  "requirements": [
+    {
+      "id": 1,
+      "text": "REST API section with all endpoints, methods, params, and response schemas",
+      "priority": "MUST",
+      "acceptance": "Each endpoint has method, path, params, and example response"
+    },
+    {
+      "id": 2,
+      "text": "WebSocket section with connection URL, message format, and reconnection notes",
+      "priority": "MUST",
+      "acceptance": "Message envelope format documented with JSON example"
+    },
+    {
+      "id": 3,
+      "text": "Prometheus section with metric names, types, labels, and scraping config",
+      "priority": "MUST",
+      "acceptance": "All 9 metrics listed with name, type, and label dimensions"
+    },
+    {
+      "id": 4,
+      "text": "Configuration section with TOML, env vars, and ctx override docs",
+      "priority": "MUST",
+      "acceptance": "All 7 config fields documented with type, default, env var, and TOML key"
+    },
+    {
+      "id": 5,
+      "text": "Merge precedence documented",
+      "priority": "SHOULD",
+      "acceptance": "Clear ordering: defaults < TOML < env < ctx"
+    },
+    {
+      "id": 6,
+      "text": "Quick-start examples for enabling API, Prometheus, and config",
+      "priority": "SHOULD",
+      "acceptance": "Copy-paste TOML snippet and env var examples"
+    }
+  ],
+  "success_criteria": [
+    "README documents all 7 REST endpoints with methods, paths, and response schemas",
+    "README documents WebSocket /ws/tps endpoint with message format",
+    "README documents all 9 Prometheus metrics",
+    "README documents all 7 config fields with env var names",
+    "README documents merge precedence"
+  ]
+}

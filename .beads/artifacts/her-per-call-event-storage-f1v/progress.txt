@@ -1,0 +1,4 @@
+[2026-06-16] Bead created: her-per-call-event-storage-f1v
+[2026-06-16] PRD, decisions, prd.json written
+[2026-06-16] Plan, tasks, context-capsule written
+[2026-06-16] Plan artifacts written: plan.md, tasks.md, context-capsule.md
