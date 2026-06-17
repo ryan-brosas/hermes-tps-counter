@@ -106,6 +106,15 @@ _PRIVACY_VALID_TREATMENTS = frozenset({"raw", "pseudonymized", "redacted", "omit
 _RETENTION_MAX_SESSIONS_ENV = "HERMES_TPS_MAX_SESSIONS"
 _RETENTION_SESSION_TTL_SECONDS_ENV = "HERMES_TPS_SESSION_TTL_SECONDS"
 
+# TPS threshold alerting configuration
+_ALERT_CONFIG: Dict[str, Any] = {
+    "threshold": None,       # None = auto-calculate from cold-start baseline
+    "eval_window": 5,        # last N calls evaluated for alert
+    "cold_start_calls": 10,  # first N calls establish baseline
+    "cold_start_factor": 0.5, # threshold = baseline_mean × factor
+}
+_ALERT_HOOK_MANAGER: Optional[Any] = None
+
 
 class _PrivacyPolicy:
     """Dependency-free redaction policy for outbound observability identifiers."""
@@ -374,6 +383,13 @@ class _SessionTPS:
         "turn_start_input_tokens",
         "turn_start_time",
         "created_at",
+        "last_updated_monotonic",
+        "alert_state",
+        "alert_threshold",
+        "alert_fired_at",
+        "alert_resolved_at",
+        "cold_start_samples",
+        "recent_tps_samples",
     )
 
     def __init__(self) -> None:
@@ -390,6 +406,12 @@ class _SessionTPS:
         self.turn_start_input_tokens: int = 0
         self.turn_start_time: float = time.time()
         self.created_at: float = time.time()
+        self.alert_state: str = "idle"
+        self.alert_threshold: float = 0.0
+        self.alert_fired_at: Optional[float] = None
+        self.alert_resolved_at: Optional[float] = None
+        self.cold_start_samples: List[float] = []
+        self.recent_tps_samples: List[float] = []
 
     def record(self, output_tokens: int, duration: float, input_tokens: int = 0) -> None:
         self.call_count += 1
@@ -454,6 +476,68 @@ class _SessionTPS:
         if n >= 1_000:
             return f"{n / 1_000:.1f}K"
         return str(n)
+
+
+def _evaluate_alert(state: _SessionTPS, tps: float, session_id: str) -> None:
+    """Evaluate TPS against threshold and manage alert state machine.
+
+    Must be called while _STATE_LOCK is held.
+    """
+    # Cold-start phase: collect baseline samples to auto-calculate threshold
+    if _ALERT_CONFIG["threshold"] is None:
+        if len(state.cold_start_samples) < _ALERT_CONFIG["cold_start_calls"]:
+            state.cold_start_samples.append(tps)
+            if len(state.cold_start_samples) >= _ALERT_CONFIG["cold_start_calls"]:
+                mean_baseline = sum(state.cold_start_samples) / len(state.cold_start_samples)
+                state.alert_threshold = mean_baseline * _ALERT_CONFIG["cold_start_factor"]
+            return  # No alert evaluation during cold start
+    else:
+        # Fixed threshold — apply immediately
+        state.alert_threshold = _ALERT_CONFIG["threshold"]
+
+    # Rolling window evaluation
+    state.recent_tps_samples.append(tps)
+    if len(state.recent_tps_samples) > _ALERT_CONFIG["eval_window"]:
+        state.recent_tps_samples = state.recent_tps_samples[-_ALERT_CONFIG["eval_window"]:]
+
+    # Only evaluate when the window is full
+    if len(state.recent_tps_samples) < _ALERT_CONFIG["eval_window"]:
+        return
+
+    rolling_mean = sum(state.recent_tps_samples) / len(state.recent_tps_samples)
+    threshold = state.alert_threshold
+
+    if threshold <= 0:
+        return  # No threshold configured
+
+    # State machine: idle → firing → resolved (and back to firing on re-crossing)
+    if rolling_mean < threshold:
+        if state.alert_state in ("idle", "resolved"):
+            state.alert_state = "firing"
+            state.alert_fired_at = time.time()
+            _emit_alert(state, session_id, tps)
+    else:
+        if state.alert_state == "firing":
+            state.alert_state = "resolved"
+            state.alert_resolved_at = time.time()
+            _emit_alert(state, session_id, tps)
+
+
+def _emit_alert(state: _SessionTPS, session_id: str, tps: float) -> None:
+    """Fire the tps_alert hook with current alert payload."""
+    if _ALERT_HOOK_MANAGER is None:
+        return
+    try:
+        payload = {
+            "session_id": session_id,
+            "state": state.alert_state,
+            "tps": tps,
+            "threshold": state.alert_threshold,
+            "timestamp": time.time(),
+        }
+        _ALERT_HOOK_MANAGER.invoke_hook("tps_alert", **payload)
+    except Exception:
+        logger.debug("tps-counter: alert hook invocation failed", exc_info=True)
 
 
 def _extract_provider(model: str) -> str:
@@ -630,10 +714,12 @@ def _on_post_api_request(**kwargs: Any) -> None:
     model = kwargs.get("model", "") or ""
     with _STATE_LOCK:
         state.record(output_tokens, duration, input_tokens)
+        tps_val = output_tokens / duration if duration > 0 else 0.0
+        # Evaluate TPS threshold alert
+        _evaluate_alert(state, tps_val, session_id)
         # Write-through to SQLite
         _persist_state(session_id, state)
         # Record per-call event
-        tps_val = output_tokens / duration if duration > 0 else 0.0
         if _STORE is not None:
             provider_val = _extract_provider(model)
             try:
@@ -681,6 +767,9 @@ def _on_post_api_request(**kwargs: Any) -> None:
                     "output_tokens": state.total_output_tokens,
                     "input_tokens": state.total_input_tokens,
                     "total_tokens": state.total_tokens,
+                    "alert_state": state.alert_state,
+                    "alert_threshold": state.alert_threshold,
+                    "alert_indicator": "⚠ TPS ALERT" if state.alert_state == "firing" else "",
                 }
                 # Include per-model breakdown if available
                 with _STATE_LOCK:
@@ -734,6 +823,7 @@ def _on_post_api_request(**kwargs: Any) -> None:
         logger.debug("tps-counter: WebSocket broadcast failed: %s", exc)
 
     # Log at debug level so it doesn't spam
+    privacy_policy = _get_privacy_policy()
     log_session_id = _redact_identifier("session_id", session_id, privacy_policy)
     if log_session_id is _OMITTED:
         log_session_id = "[omitted]"
@@ -811,6 +901,11 @@ def _stop_api_server() -> None:
         _API_SERVER = None
 
 
+def _on_tps_alert(**kwargs: Any) -> None:
+    """Stub handler for tps_alert hook — invoked by hook manager."""
+    pass
+
+
 def _on_session_end(**kwargs: Any) -> None:
     """Hook callback: clean up session state when a session ends."""
     session_id = kwargs.get("session_id", "")
@@ -822,7 +917,21 @@ def _on_session_end(**kwargs: Any) -> None:
 
 def register(ctx: Any) -> None:
     """Plugin entry point — called by Hermes plugin loader."""
-    global _STORE, _prometheus_enabled
+    global _STORE, _prometheus_enabled, _ALERT_HOOK_MANAGER
+
+    # Read alert threshold env vars
+    tps_threshold_env = os.environ.get("TPS_THRESHOLD")
+    if tps_threshold_env is not None:
+        try:
+            _ALERT_CONFIG["threshold"] = float(tps_threshold_env)
+        except (ValueError, TypeError):
+            pass
+    tps_eval_window_env = os.environ.get("TPS_EVAL_WINDOW")
+    if tps_eval_window_env is not None:
+        try:
+            _ALERT_CONFIG["eval_window"] = int(tps_eval_window_env)
+        except (ValueError, TypeError):
+            pass
 
     # Load merged config (defaults < TOML < env vars < ctx overrides)
     cfg = get_config(ctx)
@@ -841,6 +950,8 @@ def register(ctx: Any) -> None:
 
     ctx.register_hook("post_api_request", _on_post_api_request)
     ctx.register_hook("on_session_end", _on_session_end)
+    ctx.register_hook("tps_alert", _on_tps_alert)
+    _ALERT_HOOK_MANAGER = getattr(ctx, "plugin_manager", None)
     logger.info("tps-counter plugin registered")
 
     # Optionally start the REST API server
@@ -1046,7 +1157,7 @@ def get_tps_stats(session_id: str) -> Dict[str, Any]:
     with _STATE_LOCK:
         state = _SESSIONS.get(session_id)
     if state is None:
-        return {"calls": 0, "avg_tps": 0, "last_tps": 0, "peak_tps": 0, "total_output_tokens": 0, "total_input_tokens": 0, "total_tokens": 0}
+        return {"calls": 0, "avg_tps": 0, "last_tps": 0, "peak_tps": 0, "total_output_tokens": 0, "total_input_tokens": 0, "total_tokens": 0, "alert_state": "idle", "alert_threshold": 0.0}
     return {
         "calls": state.call_count,
         "avg_tps": round(state.avg_tps, 1),
@@ -1057,6 +1168,8 @@ def get_tps_stats(session_id: str) -> Dict[str, Any]:
         "total_tokens": state.total_tokens,
         "total_duration": round(state.total_duration, 2),
         "session_duration": round(time.time() - state.created_at, 2),
+        "alert_state": state.alert_state,
+        "alert_threshold": state.alert_threshold,
     }
 
 
