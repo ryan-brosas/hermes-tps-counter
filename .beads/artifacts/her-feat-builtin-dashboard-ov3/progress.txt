@@ -1,0 +1,6 @@
+COMPLETED
+- Dashboard HTML module created.
+- Root route wired.
+- Dashboard tests added.
+- README documented.
+- Full test suite passed: 313 passed.

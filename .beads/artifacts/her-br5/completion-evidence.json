@@ -1,0 +1,99 @@
+{
+  "bead_id": "her-br5",
+  "status": "passed",
+  "updated": "2026-06-17",
+  "base_branch": "origin/feat/her-chore-docs-quickstart-sj2",
+  "implementation_branch": "feat/her-br5-retention",
+  "verification_commands": [
+    {
+      "command": "python3 -m pytest tests/test_api.py -v",
+      "exit_code": 0,
+      "summary": "25 passed in 0.10s"
+    },
+    {
+      "command": "python3 -m pytest tests/test_thread_safety.py -v",
+      "exit_code": 0,
+      "summary": "6 passed in 0.14s"
+    },
+    {
+      "command": "python3 -m pytest tests/ -v",
+      "exit_code": 0,
+      "summary": "74 passed in 0.30s"
+    },
+    {
+      "command": "python3 - <<'PY' ... forbidden marker inspection ... PY",
+      "exit_code": 0,
+      "summary": "no forbidden dependency/background/persistence markers found"
+    },
+    {
+      "command": "br lint her-br5 --json",
+      "exit_code": 0,
+      "summary": "{\"total\":0,\"issues\":0,\"results\":[]}"
+    },
+    {
+      "command": "git diff --check",
+      "exit_code": 0,
+      "summary": "no whitespace errors"
+    }
+  ],
+  "requirements_met": [
+    {
+      "requirement": "Provide opt-in max-session retention for _SESSIONS.",
+      "status": "PASS",
+      "evidence": "HERMES_TPS_MAX_SESSIONS parsing and max-count pruning implemented; test_max_sessions_prunes_oldest_and_preserves_current verifies bound enforcement."
+    },
+    {
+      "requirement": "Provide opt-in stale-session age pruning.",
+      "status": "PASS",
+      "evidence": "HERMES_TPS_SESSION_TTL_SECONDS parsing and monotonic last-update pruning implemented; test_session_ttl_prunes_stale_without_real_sleep verifies stale removal without sleeps."
+    },
+    {
+      "requirement": "Preserve default behavior.",
+      "status": "PASS",
+      "evidence": "Default diagnostics report disabled; full suite passes with no env vars; test_default_retention_disabled_preserves_unbounded_behavior verifies unbounded default."
+    },
+    {
+      "requirement": "Preserve missing-session semantics.",
+      "status": "PASS",
+      "evidence": "get_tps_stats still returns the existing zero-value structure; tests verify reads do not create missing/pruned sessions."
+    },
+    {
+      "requirement": "Keep retention dependency-free and non-invasive.",
+      "status": "PASS",
+      "evidence": "Implementation uses stdlib env/time helpers only; forbidden marker inspection found no external deps, background threads, schedulers, REST/WebSocket/Prometheus servers, or SQLite persistence additions."
+    },
+    {
+      "requirement": "Make policy visible to consumers.",
+      "status": "PASS",
+      "evidence": "get_observability_contract includes additive retention metadata with env names, enabled flags, numeric limits, and opportunistic in-memory scope."
+    },
+    {
+      "requirement": "Keep privacy guarantees intact.",
+      "status": "PASS",
+      "evidence": "Retention diagnostics contain no session IDs, model/provider values, salts, secret material, hashes, or per-session listings; contract privacy test asserts raw session id is absent."
+    },
+    {
+      "requirement": "Cover concurrency edge cases.",
+      "status": "PASS",
+      "evidence": "test_concurrent_pruning_readers_and_writers_no_crash exercises concurrent reads/writes while max-session pruning is active."
+    }
+  ],
+  "blast_radius_covered": {
+    "expected_files": [
+      "__init__.py",
+      "tests/test_api.py",
+      "tests/test_thread_safety.py",
+      ".beads/artifacts/her-br5/completion-evidence.json"
+    ],
+    "actual_files": [
+      "__init__.py",
+      "tests/test_api.py",
+      "tests/test_thread_safety.py",
+      ".beads/artifacts/her-br5/solve-ledger.md",
+      ".beads/artifacts/her-br5/progress.txt",
+      ".beads/artifacts/her-br5/completion-evidence.json",
+      ".beads/issues.jsonl"
+    ],
+    "bv_robot_impact": "low risk; no related bead file touches reported"
+  }
+}

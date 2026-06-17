@@ -1,0 +1,95 @@
+{
+  "bead_id": "her-chore-docs-quickstart-sj2",
+  "completed_by": "daedalus",
+  "completed_at": "2026-06-17T03:39:00+08:00",
+  "scope": "documentation-only README quickstart/troubleshooting update",
+  "requirements_met": [
+    {
+      "requirement": "README contains install/restart/verify quickstart",
+      "status": "PASS",
+      "evidence": "README.md section 'Quickstart: Install, Restart, Verify' documents copy to ~/.hermes/plugins/tps-counter, restart, LLM call, and status/API verification."
+    },
+    {
+      "requirement": "README documents status-bar integration with freshness and session mismatch rules",
+      "status": "PASS",
+      "evidence": "README.md section 'Status-Bar Integration' documents active CLI instance, agent._tps_snapshot, patch points, snapshot fields, time.monotonic() age calculation, positive/zero display behavior, and privacy-treated session comparison."
+    },
+    {
+      "requirement": "README summarizes current observability surfaces without claiming absent endpoints exist",
+      "status": "PASS",
+      "evidence": "README.md sections 'In-Process API Helper' and 'Observability Contract' document agent._tps_snapshot, get_tps_stats(session_id), get_observability_contract(), get_privacy_diagnostics(), and mark REST/WebSocket/Prometheus unavailable when contract available=false."
+    },
+    {
+      "requirement": "README includes practical troubleshooting guide",
+      "status": "PASS",
+      "evidence": "README.md section 'Troubleshooting' includes symptom/cause/check rows for no display, zero stats, stale display, cross-session mismatch, privacy-redacted identifiers, missing optional surfaces, plugin registration failures, and blank labels."
+    },
+    {
+      "requirement": "Documentation/code consistency",
+      "status": "PASS",
+      "evidence": "README field names, hook name, plugin name/version, helper names, unavailable optional surfaces, and privacy env vars were cross-checked against plugin.yaml, __init__.py, tests/test_api.py, and tests/test_privacy.py."
+    },
+    {
+      "requirement": "Documentation-only implementation",
+      "status": "PASS",
+      "evidence": "Only README.md is staged for implementation; solve-ledger/progress/evidence artifacts document the bead. Pre-existing unstaged .gitignore and unrelated untracked scheduler files were not staged."
+    }
+  ],
+  "verification_commands": [
+    {
+      "command": "grep required README terms (Quickstart, agent._tps_snapshot, updated_monotonic, helpers, privacy env vars, Troubleshooting)",
+      "status": "PASS",
+      "evidence": "All required terms were found in README.md."
+    },
+    {
+      "command": "python3 -m pytest -q",
+      "status": "PASS",
+      "evidence": "60 passed in 0.18s"
+    },
+    {
+      "command": "bv --robot-impact her-chore-docs-quickstart-sj2",
+      "status": "PASS",
+      "evidence": "risk_level=low, risk_score=0, no warnings, no affected beads."
+    },
+    {
+      "command": "br lint her-chore-docs-quickstart-sj2 --json",
+      "status": "PASS",
+      "evidence": "total=0, issues=0."
+    },
+    {
+      "command": "bv --robot-suggest",
+      "status": "PASS",
+      "evidence": "Completed; returned non-blocking label suggestions only."
+    },
+    {
+      "command": "br dep cycles --blocking-only --json",
+      "status": "PASS",
+      "evidence": "cycles=[], count=0."
+    },
+    {
+      "command": "br sync --flush-only",
+      "status": "PASS",
+      "evidence": "Nothing to export (no dirty issues)."
+    },
+    {
+      "command": "git diff --check",
+      "status": "PASS",
+      "evidence": "No whitespace errors reported."
+    },
+    {
+      "command": "br doctor --json",
+      "status": "WARN",
+      "evidence": "Workspace health recoverable; pre-existing database_corrupt/sqlite.integrity_check anomaly reported, while JSONL parse/count/sync checks were OK."
+    }
+  ],
+  "blast_radius_covered": {
+    "intended_files": ["README.md"],
+    "implementation_files_staged": ["README.md"],
+    "artifact_files_staged": [
+      ".beads/artifacts/her-chore-docs-quickstart-sj2/solve-ledger.md",
+      ".beads/artifacts/her-chore-docs-quickstart-sj2/progress.txt",
+      ".beads/artifacts/her-chore-docs-quickstart-sj2/completion-evidence.json"
+    ],
+    "unrelated_unstaged_noise": [".gitignore", ".beads/", ".pi/", "AGENTS.md", "HERMES.md", "MagicMock/", ".worktrees/", ".hermes-tmp.378218"]
+  }
+}
