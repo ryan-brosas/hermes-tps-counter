@@ -202,6 +202,7 @@ When the API is enabled, open `http://127.0.0.1:9127/` (or your configured host/
 | `GET` | `/api/v1/sessions` | List all sessions with TPS stats |
 | `POST` | `/api/v1/sessions/batch/tps` | TPS stats for multiple requested sessions |
 | `GET` | `/api/v1/sessions/{session_id}/tps` | TPS stats for a single session |
+| `POST` | `/api/v1/sessions/batch/tps` | TPS stats for multiple sessions in one request |
 | `GET` | `/api/v1/summary` | Aggregated TPS summary across all sessions |
 | `GET` | `/api/v1/events/{session_id}` | Per-call events for a session |
 | `GET` | `/api/v1/trends/{session_id}` | Per-model and per-provider aggregated trends |
@@ -356,6 +357,41 @@ Partial-miss response:
 ### `GET /api/v1/sessions/{session_id}/tps`
 
 Same response shape as a single session entry above. Returns `404` if the session is not found.
+
+### `POST /api/v1/sessions/batch/tps`
+
+Request TPS stats for multiple session IDs in a single HTTP request. Found sessions are returned in `sessions`; IDs not present in the store are listed in `missing_session_ids`. Duplicate IDs in the request are normalised (first-seen order preserved).
+
+**Request:**
+
+```json
+{
+  "session_ids": ["abc123", "def456", "ghost"]
+}
+```
+
+**Response (partial hit):**
+
+```json
+{
+  "sessions": [
+    {
+      "session_id": "abc123",
+      "call_count": 15,
+      "total_output_tokens": 12345,
+      "total_input_tokens": 45000,
+      "total_duration": 125.3,
+      "peak_tps": 456.2,
+      "last_call_tps": 114.0,
+      "avg_tps": 98.7,
+      "updated_at": "2026-06-16T10:30:00Z"
+    }
+  ],
+  "missing_session_ids": ["def456", "ghost"]
+}
+```
+
+**Validation:** Empty `session_ids` list or non-list input returns `422`. Returns `503` if the database is unavailable.
 
 ### `GET /api/v1/summary`
 
