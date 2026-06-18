@@ -83,6 +83,8 @@ class TestSchemaMigration:
             }
             conn.close()
             assert "idx_call_events_session_time" in indexes
+            assert "idx_call_events_created_at" in indexes
+            assert "idx_session_tps_updated_at" in indexes
         finally:
             store.close()
 
@@ -397,6 +399,17 @@ class TestExportEvents:
         assert len(result) == 1
         assert result[0]["output_tokens"] == 40
 
+    def test_export_events_with_session_id_filter(self, store):
+        """Only events for the requested session are returned before LIMIT."""
+        for idx in range(5):
+            store.record_event(f"other-{idx}", "m1", "p1", 10, 20, 1.0, 20.0)
+        store.record_event("target", "m1", "p1", 30, 40, 2.0, 20.0)
+
+        result = store.export_events(session_id="target", limit=1)
+
+        assert len(result) == 1
+        assert result[0]["session_id"] == "target"
+
     def test_export_events_with_until_filter(self, store):
         """Only events before the until timestamp are returned."""
         now = datetime.now(timezone.utc)
@@ -562,6 +575,34 @@ class TestEventsEndpoint:
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["events"]) == 1
+
+
+class TestExportHistoryEndpoint:
+    @pytest.fixture
+    def client(self, store):
+        from api import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app(store)
+        return TestClient(app)
+
+    def test_export_history_rejects_limit_above_hard_cap(self, client):
+        resp = client.get("/api/v1/export/history?limit=1001")
+
+        assert resp.status_code == 422
+        assert "exceeds maximum 1000" in resp.json()["detail"]
+
+    def test_export_history_filters_events_before_limit(self, client, store):
+        for idx in range(5):
+            store.record_event(f"other-{idx}", "m1", "p1", 10, 20, 1.0, 20.0)
+        store.record_event("target", "m1", "p1", 30, 40, 2.0, 20.0)
+
+        resp = client.get("/api/v1/export/history?session_id=target&limit=1")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["metadata"]["event_count"] == 1
+        assert data["events"][0]["session_id"] == "target"
 
 
 class TestTrendsEndpoint:

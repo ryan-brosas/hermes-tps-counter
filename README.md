@@ -463,11 +463,10 @@ Query parameters:
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| `session_id` | string | — | Filter to a specific session |
+| `session_id` | string | — | Filter sessions and events to a specific session |
 | `since` | string | — | ISO 8601 timestamp lower bound |
 | `until` | string | — | ISO 8601 timestamp upper bound |
-| `limit` | int | `100` | Max rows to return (capped at `max_limit`) |
-| `max_limit` | int | `1000` | Hard upper bound on limit |
+| `limit` | int | `100` | Max rows to return |
 | `format` | string | `json` | Response format: `json` or `csv` |
 
 **Bounds enforcement:**
@@ -475,6 +474,7 @@ Query parameters:
 - Maximum limit: 1000 rows — requests with `limit > 1000` return `422`
 - `limit <= 0` returns `422`
 - Unsupported `format` values return `400`
+- The hard maximum is enforced server-side and cannot be raised by the client
 
 **JSON response example:**
 

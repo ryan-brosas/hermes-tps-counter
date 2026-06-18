@@ -184,6 +184,10 @@ class ExportResponse(BaseModel):
     events: List[Dict[str, Any]]
 
 
+_DEFAULT_EXPORT_LIMIT = 100
+_HARD_EXPORT_LIMIT = 1000
+
+
 # ---------------------------------------------------------------------------
 # Rate limiting middleware
 # ---------------------------------------------------------------------------
@@ -444,8 +448,7 @@ def create_app(
         session_id: Optional[str] = None,
         since: Optional[str] = None,
         until: Optional[str] = None,
-        limit: int = 100,
-        max_limit: int = 1000,
+        limit: int = _DEFAULT_EXPORT_LIMIT,
         format: str = "json",
     ) -> Any:
         """Bounded historical export for offline analysis and dashboard import.
@@ -462,10 +465,10 @@ def create_app(
                 status_code=422,
                 detail="limit must be a positive integer",
             )
-        if limit > max_limit:
+        if limit > _HARD_EXPORT_LIMIT:
             raise HTTPException(
                 status_code=422,
-                detail=f"limit {limit} exceeds maximum {max_limit}",
+                detail=f"limit {limit} exceeds maximum {_HARD_EXPORT_LIMIT}",
             )
 
         # Validate format
@@ -475,7 +478,7 @@ def create_app(
                 detail=f"Unsupported format '{format}'. Use 'json' or 'csv'.",
             )
 
-        effective_limit = min(limit, max_limit)
+        effective_limit = min(limit, _HARD_EXPORT_LIMIT)
         filters: Dict[str, Any] = {"limit": effective_limit}
         if session_id:
             filters["session_id"] = session_id
@@ -491,19 +494,16 @@ def create_app(
             since=since,
             until=until,
             limit=effective_limit,
-            max_limit=max_limit,
+            max_limit=_HARD_EXPORT_LIMIT,
         )
 
-        # Fetch events (cross-session unless filtered by session_id)
         events = store.export_events(
+            session_id=session_id,
             since=since,
             until=until,
             limit=effective_limit,
-            max_limit=max_limit,
+            max_limit=_HARD_EXPORT_LIMIT,
         )
-        # If session_id specified, filter events to that session
-        if session_id:
-            events = [e for e in events if e.get("session_id") == session_id]
 
         metadata = ExportMetadata(
             generated_at=datetime.now(timezone.utc).isoformat(),

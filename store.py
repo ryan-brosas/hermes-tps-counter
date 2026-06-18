@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS session_tps (
     avg_tps             REAL    NOT NULL DEFAULT 0.0,
     updated_at          TEXT    NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_session_tps_updated_at
+    ON session_tps (updated_at);
 """
 
 _UPSERT = """
@@ -80,6 +83,9 @@ CREATE TABLE IF NOT EXISTS call_events (
 
 CREATE INDEX IF NOT EXISTS idx_call_events_session_time
     ON call_events (session_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_call_events_created_at
+    ON call_events (created_at);
 """
 
 _INSERT_EVENT = """
@@ -132,7 +138,8 @@ FROM call_events WHERE 1=1
 
 _EXPORT_EVENTS_SINCE = " AND created_at >= ?"
 _EXPORT_EVENTS_UNTIL = " AND created_at <= ?"
-_EXPORT_EVENTS_ORDER = " ORDER BY created_at DESC LIMIT ?;"
+_EXPORT_EVENTS_SESSION_ID = " AND session_id = ?"
+_EXPORT_EVENTS_ORDER = " ORDER BY created_at DESC LIMIT ?"
 
 _EXPORT_SESSIONS_BASE = """
 SELECT session_id, call_count, total_output_tokens, total_input_tokens,
@@ -551,6 +558,7 @@ class PersistentSessionStore:
 
     def export_events(
         self,
+        session_id: Optional[str] = None,
         since: Optional[str] = None,
         until: Optional[str] = None,
         limit: int = 100,
@@ -566,6 +574,9 @@ class PersistentSessionStore:
         effective_limit = max(1, min(limit, max_limit))
         sql = _EXPORT_EVENTS_BASE
         params: list = []
+        if session_id:
+            sql += _EXPORT_EVENTS_SESSION_ID
+            params.append(session_id)
         if since:
             sql += _EXPORT_EVENTS_SINCE
             params.append(since)
