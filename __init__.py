@@ -374,6 +374,7 @@ class _SessionTPS:
         "turn_start_input_tokens",
         "turn_start_time",
         "created_at",
+        "last_updated_monotonic",
     )
 
     def __init__(self) -> None:
@@ -390,6 +391,7 @@ class _SessionTPS:
         self.turn_start_input_tokens: int = 0
         self.turn_start_time: float = time.time()
         self.created_at: float = time.time()
+        self.last_updated_monotonic: float = time.monotonic()
 
     def record(self, output_tokens: int, duration: float, input_tokens: int = 0) -> None:
         self.call_count += 1
@@ -734,6 +736,7 @@ def _on_post_api_request(**kwargs: Any) -> None:
         logger.debug("tps-counter: WebSocket broadcast failed: %s", exc)
 
     # Log at debug level so it doesn't spam
+    privacy_policy = _get_privacy_policy()
     log_session_id = _redact_identifier("session_id", session_id, privacy_policy)
     if log_session_id is _OMITTED:
         log_session_id = "[omitted]"
@@ -1106,24 +1109,24 @@ def _cleanup_session(session_id: str) -> None:
         _SESSIONS.pop(session_id, None)
         _MODELS.pop(session_id, None)
         _PROVIDERS.pop(session_id, None)
-    # Also remove from persistent store
-    if _STORE is not None:
-        try:
-            _STORE.delete(session_id)
-        except Exception as exc:
-            logger.debug("tps-counter: DB cleanup failed for %s: %s", session_id, exc)
     logger.debug("tps-counter: cleaned up session %s", session_id[:8])
 
 
 def _evict_if_needed() -> None:
-    """Evict the session with the oldest turn_start_time if over max_sessions."""
+    """Evict the least-recently-active in-memory session if over max_sessions."""
     max_sessions = get_config().max_sessions
     oldest_id = None
     with _STATE_LOCK:
         if len(_SESSIONS) <= max_sessions:
             return
-        # Find session with oldest turn_start_time (least recently active)
-        oldest_id = min(_SESSIONS, key=lambda sid: _SESSIONS[sid].turn_start_time)
+        oldest_id = min(
+            _SESSIONS,
+            key=lambda sid: getattr(
+                _SESSIONS[sid],
+                "last_updated_monotonic",
+                _SESSIONS[sid].turn_start_time,
+            ),
+        )
         _SESSIONS.pop(oldest_id, None)
         _MODELS.pop(oldest_id, None)
         _PROVIDERS.pop(oldest_id, None)
@@ -1132,9 +1135,3 @@ def _evict_if_needed() -> None:
             oldest_id[:8],
             max_sessions,
         )
-    # Remove from persistent store (outside lock to avoid deadlock)
-    if oldest_id is not None and _STORE is not None:
-        try:
-            _STORE.delete(oldest_id)
-        except Exception as exc:
-            logger.debug("tps-counter: DB eviction failed for %s: %s", oldest_id[:8], exc)

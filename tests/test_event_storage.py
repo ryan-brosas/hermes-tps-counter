@@ -439,12 +439,12 @@ class TestExportEvents:
         result = store.export_events(limit=5)
         assert len(result) == 5
 
-    def test_export_events_max_limit_clamped(self, store):
-        """max_limit overrides an excessive limit value."""
-        for i in range(10):
-            store.record_event("s1", "m1", "p1", i * 10, i * 20, 1.0, float(i * 20))
-        result = store.export_events(limit=999, max_limit=5)
-        assert len(result) == 5
+    def test_export_events_hard_limit_clamps_excessive_values(self, store):
+        """The store enforces its server-side export cap."""
+        for i in range(1200):
+            store.record_event("s1", "m1", "p1", i, i * 2, 1.0, float(i * 2))
+        result = store.export_events(limit=5000)
+        assert len(result) == 1000
 
     def test_export_events_cross_session(self, store):
         """Exports events from multiple sessions."""
@@ -505,15 +505,15 @@ class TestExportSessions:
         result = store.export_sessions(limit=5)
         assert len(result) == 5
 
-    def test_export_sessions_max_limit_clamped(self, store):
-        """max_limit overrides an excessive limit value."""
-        for i in range(10):
+    def test_export_sessions_hard_limit_clamps_excessive_values(self, store):
+        """The store enforces its server-side export cap."""
+        for i in range(1200):
             store.save(f"s{i}", {"call_count": i, "total_output_tokens": i * 100,
                                  "total_input_tokens": i * 50, "total_duration": float(i),
                                  "peak_tps": float(i * 10), "last_call_tps": float(i * 10),
                                  "avg_tps": float(i * 10)})
-        result = store.export_sessions(limit=999, max_limit=3)
-        assert len(result) == 3
+        result = store.export_sessions(limit=5000)
+        assert len(result) == 1000
 
 
 # ------------------------------------------------------------------
@@ -571,10 +571,36 @@ class TestEventsEndpoint:
             store._conn.commit()
 
         since = (now - timedelta(hours=1)).isoformat()
-        resp = client.get(f"/api/v1/events/s1?since={since}")
+        resp = client.get("/api/v1/events/s1", params={"since": since})
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["events"]) == 1
+
+    def test_events_rejects_invalid_limit(self, client):
+        resp = client.get("/api/v1/events/s1?limit=-1")
+
+        assert resp.status_code == 422
+        assert "positive integer" in resp.json()["detail"]
+
+    def test_events_normalizes_zulu_timestamp_filters(self, client, store):
+        with store._lock:
+            store._conn.execute(
+                "INSERT INTO call_events (session_id, model, provider, input_tokens, output_tokens, duration, tps, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                ("s1", "m1", "p1", 10, 20, 1.0, 20.0, "2026-06-16T10:30:00.123456+00:00"),
+            )
+            store._conn.commit()
+
+        resp = client.get("/api/v1/events/s1?since=2026-06-16T10:30:00Z")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["events"]) == 1
+
+    def test_events_rejects_invalid_timestamp_filter(self, client):
+        resp = client.get("/api/v1/events/s1?since=not-a-timestamp")
+
+        assert resp.status_code == 422
+        assert "valid ISO 8601 timestamp" in resp.json()["detail"]
 
 
 class TestExportHistoryEndpoint:
@@ -592,6 +618,27 @@ class TestExportHistoryEndpoint:
         assert resp.status_code == 422
         assert "exceeds maximum 1000" in resp.json()["detail"]
 
+    def test_export_history_rejects_invalid_timestamp_filter(self, client):
+        resp = client.get("/api/v1/export/history?since=not-a-timestamp")
+
+        assert resp.status_code == 422
+        assert "valid ISO 8601 timestamp" in resp.json()["detail"]
+
+    def test_export_history_normalizes_zulu_timestamp_filters(self, client, store):
+        with store._lock:
+            store._conn.execute(
+                "INSERT INTO call_events (session_id, model, provider, input_tokens, output_tokens, duration, tps, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                ("s1", "m1", "p1", 10, 20, 1.0, 20.0, "2026-06-16T10:30:00.123456+00:00"),
+            )
+            store._conn.commit()
+
+        resp = client.get("/api/v1/export/history?since=2026-06-16T10:30:00Z")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["metadata"]["event_count"] == 1
+        assert data["events"][0]["session_id"] == "s1"
+
     def test_export_history_filters_events_before_limit(self, client, store):
         for idx in range(5):
             store.record_event(f"other-{idx}", "m1", "p1", 10, 20, 1.0, 20.0)
@@ -603,6 +650,29 @@ class TestExportHistoryEndpoint:
         data = resp.json()
         assert data["metadata"]["event_count"] == 1
         assert data["events"][0]["session_id"] == "target"
+        assert data["sessions"][0]["session_id"] == "target"
+
+    def test_export_history_summaries_follow_filtered_window(self, client, store):
+        store.record_event("s1", "m1", "p1", 50, 100, 2.0, 50.0)
+        store.record_event("s1", "m1", "p1", 25, 40, 1.0, 40.0)
+
+        with store._lock:
+            store._conn.execute(
+                "INSERT OR REPLACE INTO session_tps (session_id, call_count, total_output_tokens, total_input_tokens, total_duration, peak_tps, last_call_tps, avg_tps, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("s1", 9, 999, 555, 33.0, 99.0, 88.0, 77.0, "2026-06-16T10:31:00+00:00"),
+            )
+            store._conn.execute("UPDATE call_events SET created_at = ? WHERE id = 1", ("2026-06-16T09:00:00+00:00",))
+            store._conn.execute("UPDATE call_events SET created_at = ? WHERE id = 2", ("2026-06-16T10:30:00+00:00",))
+            store._conn.commit()
+
+        resp = client.get("/api/v1/export/history?session_id=s1&since=2026-06-16T10:00:00Z")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["metadata"]["event_count"] == 1
+        assert data["sessions"][0]["call_count"] == 1
+        assert data["sessions"][0]["total_output_tokens"] == 40
+        assert data["sessions"][0]["total_input_tokens"] == 25
 
 
 class TestTrendsEndpoint:

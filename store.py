@@ -151,6 +151,7 @@ _EXPORT_SESSIONS_IDS_PLACEHOLDER = " AND session_id IN ({})"
 _EXPORT_SESSIONS_SINCE = " AND updated_at >= ?"
 _EXPORT_SESSIONS_UNTIL = " AND updated_at <= ?"
 _EXPORT_SESSIONS_ORDER = " ORDER BY updated_at DESC LIMIT ?;"
+_EXPORT_HARD_LIMIT = 1000
 
 
 class PersistentSessionStore:
@@ -562,16 +563,15 @@ class PersistentSessionStore:
         since: Optional[str] = None,
         until: Optional[str] = None,
         limit: int = 100,
-        max_limit: int = 1000,
     ) -> List[Dict[str, Any]]:
         """Export call events across all sessions with bounded SQL.
 
-        Returns at most ``min(limit, max_limit)`` rows ordered by created_at
+        Returns at most ``min(limit, _EXPORT_HARD_LIMIT)`` rows ordered by created_at
         descending.  Does **not** call ``load_all()`` — uses direct bounded SQL.
         """
         if self._conn is None:
             return []
-        effective_limit = max(1, min(limit, max_limit))
+        effective_limit = max(1, min(limit, _EXPORT_HARD_LIMIT))
         sql = _EXPORT_EVENTS_BASE
         params: list = []
         if session_id:
@@ -600,7 +600,6 @@ class PersistentSessionStore:
         since: Optional[str] = None,
         until: Optional[str] = None,
         limit: int = 100,
-        max_limit: int = 1000,
     ) -> List[Dict[str, Any]]:
         """Export session TPS rows with bounded SQL.
 
@@ -609,7 +608,7 @@ class PersistentSessionStore:
         """
         if self._conn is None:
             return []
-        effective_limit = max(1, min(limit, max_limit))
+        effective_limit = max(1, min(limit, _EXPORT_HARD_LIMIT))
         sql = _EXPORT_SESSIONS_BASE
         params: list = []
         if session_ids:

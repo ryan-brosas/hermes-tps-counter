@@ -133,7 +133,7 @@ class SessionListResponse(BaseModel):
 
 
 class BatchSessionTPSRequest(BaseModel):
-    session_ids: List[str] = Field(..., min_length=1)
+    session_ids: List[str] = Field(..., min_length=1, max_length=1000)
 
 
 class BatchSessionTPSResponse(BaseModel):
@@ -186,6 +186,96 @@ class ExportResponse(BaseModel):
 
 _DEFAULT_EXPORT_LIMIT = 100
 _HARD_EXPORT_LIMIT = 1000
+_DEFAULT_EVENT_LIMIT = 100
+_HARD_EVENT_LIMIT = 1000
+
+
+def _validate_limit(limit: int, *, name: str, hard_limit: int) -> int:
+    """Validate a positive bounded query limit."""
+    if limit <= 0:
+        raise HTTPException(status_code=422, detail=f"{name} must be a positive integer")
+    if limit > hard_limit:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{name} {limit} exceeds maximum {hard_limit}",
+        )
+    return limit
+
+
+def _normalize_timestamp_filter(value: str, *, name: str) -> str:
+    """Normalize a client-provided ISO 8601 timestamp for SQLite text comparisons."""
+    candidate = value.strip()
+    if not candidate:
+        raise HTTPException(status_code=422, detail=f"{name} must not be empty")
+    if candidate.endswith("Z"):
+        candidate = f"{candidate[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{name} must be a valid ISO 8601 timestamp",
+        ) from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
+def _normalize_time_range(
+    since: Optional[str],
+    until: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    """Normalize optional time-range filters and validate ordering."""
+    normalized_since = (
+        _normalize_timestamp_filter(since, name="since") if since is not None else None
+    )
+    normalized_until = (
+        _normalize_timestamp_filter(until, name="until") if until is not None else None
+    )
+    if (
+        normalized_since is not None
+        and normalized_until is not None
+        and normalized_since > normalized_until
+    ):
+        raise HTTPException(status_code=422, detail="since must be less than or equal to until")
+    return normalized_since, normalized_until
+
+
+def _build_session_summaries_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Aggregate returned events into per-session summaries for filtered exports."""
+    summaries: Dict[str, Dict[str, Any]] = {}
+    for event in events:
+        session_id = event["session_id"]
+        summary = summaries.setdefault(
+            session_id,
+            {
+                "session_id": session_id,
+                "call_count": 0,
+                "total_output_tokens": 0,
+                "total_input_tokens": 0,
+                "total_duration": 0.0,
+                "peak_tps": 0.0,
+                "last_call_tps": 0.0,
+                "avg_tps": 0.0,
+                "updated_at": event["created_at"],
+            },
+        )
+        summary["call_count"] += 1
+        summary["total_output_tokens"] += event["output_tokens"]
+        summary["total_input_tokens"] += event["input_tokens"]
+        summary["total_duration"] += event["duration"]
+        summary["peak_tps"] = max(summary["peak_tps"], event["tps"])
+        if event["created_at"] >= summary["updated_at"]:
+            summary["updated_at"] = event["created_at"]
+            summary["last_call_tps"] = event["tps"]
+
+    for summary in summaries.values():
+        total_duration = summary["total_duration"]
+        summary["avg_tps"] = (
+            summary["total_output_tokens"] / total_duration if total_duration > 0 else 0.0
+        )
+
+    return sorted(summaries.values(), key=lambda row: row["updated_at"], reverse=True)
 
 
 # ---------------------------------------------------------------------------
@@ -415,12 +505,19 @@ def create_app(
         session_id: str,
         since: Optional[str] = None,
         until: Optional[str] = None,
-        limit: int = 100,
+        limit: int = _DEFAULT_EVENT_LIMIT,
     ) -> EventListResponse:
         """Return per-call events for a session with optional time-range filter."""
         if store is None:
             raise HTTPException(status_code=503, detail="Database not available")
-        event_list = store.load_events(session_id, since=since, until=until, limit=limit)
+        normalized_since, normalized_until = _normalize_time_range(since, until)
+        validated_limit = _validate_limit(limit, name="limit", hard_limit=_HARD_EVENT_LIMIT)
+        event_list = store.load_events(
+            session_id,
+            since=normalized_since,
+            until=normalized_until,
+            limit=validated_limit,
+        )
         if not event_list:
             raise HTTPException(
                 status_code=404, detail=f"No events found for session '{session_id}'"
@@ -459,17 +556,8 @@ def create_app(
         if store is None:
             raise HTTPException(status_code=503, detail="Database not available")
 
-        # Validate limit
-        if limit <= 0:
-            raise HTTPException(
-                status_code=422,
-                detail="limit must be a positive integer",
-            )
-        if limit > _HARD_EXPORT_LIMIT:
-            raise HTTPException(
-                status_code=422,
-                detail=f"limit {limit} exceeds maximum {_HARD_EXPORT_LIMIT}",
-            )
+        normalized_since, normalized_until = _normalize_time_range(since, until)
+        validated_limit = _validate_limit(limit, name="limit", hard_limit=_HARD_EXPORT_LIMIT)
 
         # Validate format
         if format not in ("json", "csv"):
@@ -478,32 +566,25 @@ def create_app(
                 detail=f"Unsupported format '{format}'. Use 'json' or 'csv'.",
             )
 
-        effective_limit = min(limit, _HARD_EXPORT_LIMIT)
+        effective_limit = validated_limit
         filters: Dict[str, Any] = {"limit": effective_limit}
         if session_id:
             filters["session_id"] = session_id
-        if since:
-            filters["since"] = since
-        if until:
-            filters["until"] = until
-
-        # Fetch sessions
-        session_ids = [session_id] if session_id else None
-        sessions = store.export_sessions(
-            session_ids=session_ids,
-            since=since,
-            until=until,
-            limit=effective_limit,
-            max_limit=_HARD_EXPORT_LIMIT,
-        )
+        if normalized_since:
+            filters["since"] = normalized_since
+        if normalized_until:
+            filters["until"] = normalized_until
 
         events = store.export_events(
             session_id=session_id,
-            since=since,
-            until=until,
+            since=normalized_since,
+            until=normalized_until,
             limit=effective_limit,
-            max_limit=_HARD_EXPORT_LIMIT,
         )
+        if session_id or normalized_since or normalized_until:
+            sessions = _build_session_summaries_from_events(events)
+        else:
+            sessions = store.export_sessions(limit=effective_limit)
 
         metadata = ExportMetadata(
             generated_at=datetime.now(timezone.utc).isoformat(),

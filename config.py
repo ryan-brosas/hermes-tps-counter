@@ -323,9 +323,8 @@ def get_config(ctx: Any = None, *, config_path: Optional[Path] = None) -> TPSCon
         # Validate
         _validate(config)
 
-        # Store singleton (only if no ctx override — ctx overrides are ephemeral for testing)
-        if ctx is None:
-            _CONFIG_SINGLETON = config
+        # Store singleton so runtime paths see the same resolved registration config.
+        _CONFIG_SINGLETON = config
 
         return config
 

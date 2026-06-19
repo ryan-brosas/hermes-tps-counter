@@ -31,7 +31,7 @@ Verification checklist:
    - Status-bar integration reads `agent._tps_snapshot` on the active CLI agent once the status-bar patch points below are present.
    - Python consumers can call `get_tps_stats(session_id)` for the active session.
 
-The plugin does not install a REST route, WebSocket stream, Prometheus exporter, package manager dependency, or standalone daemon on this branch.
+The plugin works out of the box for in-process TPS tracking. The REST API, WebSocket stream, Prometheus exporter, and dashboard are optional features that require the API dependencies described below and `TPS_COUNTER_API_ENABLED=1`.
 
 ## Status-Bar Integration
 
@@ -165,7 +165,13 @@ Works out of the box. No env vars or config needed. All features below are optio
 
 ## REST API
 
-When enabled, the plugin starts a FastAPI server exposing TPS data over HTTP. Enable it with:
+When enabled, the plugin starts a FastAPI server exposing TPS data over HTTP. Install the API runtime first:
+
+```bash
+python -m pip install fastapi uvicorn
+```
+
+Then enable it with:
 
 ```bash
 export TPS_COUNTER_API_ENABLED=1
