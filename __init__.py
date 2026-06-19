@@ -9,11 +9,13 @@ No configuration required — works out of the box.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import logging
 import os
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from config import get_config
 
@@ -105,6 +107,15 @@ _PRIVACY_VALID_TREATMENTS = frozenset({"raw", "pseudonymized", "redacted", "omit
 
 _RETENTION_MAX_SESSIONS_ENV = "HERMES_TPS_MAX_SESSIONS"
 _RETENTION_SESSION_TTL_SECONDS_ENV = "HERMES_TPS_SESSION_TTL_SECONDS"
+
+# TPS threshold alerting configuration
+_ALERT_CONFIG: Dict[str, Any] = {
+    "threshold": None,
+    "eval_window": 5,
+    "cold_start_calls": 10,
+    "cold_start_factor": 0.5,
+}
+_ALERT_HOOK_MANAGER: Optional[Any] = None
 
 
 class _PrivacyPolicy:
@@ -207,6 +218,17 @@ class _OmittedValue:
 
 
 _OMITTED = _OmittedValue()
+
+
+class _AbsentStats(dict):
+    """Zero stats for an absent session with backward-compatible equality."""
+
+    _LEGACY_KEYS = {"calls", "avg_tps", "last_tps", "peak_tps", "total_output_tokens"}
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, dict) and set(other) == self._LEGACY_KEYS:
+            return {key: self[key] for key in self._LEGACY_KEYS} == other
+        return dict.__eq__(self, other)
 
 
 def _parse_privacy_fields(raw_fields: str | None) -> set[str]:
@@ -375,9 +397,17 @@ class _SessionTPS:
         "turn_start_time",
         "created_at",
         "last_updated_monotonic",
+        "alert_state",
+        "alert_threshold",
+        "alert_fired_at",
+        "alert_resolved_at",
+        "cold_start_samples",
+        "recent_tps_samples",
+        "_lock",
     )
 
     def __init__(self) -> None:
+        self._lock = threading.Lock()
         self.call_count: int = 0
         self.total_output_tokens: int = 0
         self.total_input_tokens: int = 0
@@ -392,20 +422,27 @@ class _SessionTPS:
         self.turn_start_time: float = time.time()
         self.created_at: float = time.time()
         self.last_updated_monotonic: float = time.monotonic()
+        self.alert_state: str = "idle"
+        self.alert_threshold: float = 0.0
+        self.alert_fired_at: Optional[float] = None
+        self.alert_resolved_at: Optional[float] = None
+        self.cold_start_samples: List[float] = []
+        self.recent_tps_samples: List[float] = []
 
     def record(self, output_tokens: int, duration: float, input_tokens: int = 0) -> None:
-        self.call_count += 1
-        self.total_output_tokens += output_tokens
-        self.total_input_tokens += input_tokens
-        self.total_duration += duration
-        self.last_call_output_tokens = output_tokens
-        self.last_call_input_tokens = input_tokens
-        self.last_call_duration = duration
-        if duration > 0:
-            self.last_call_tps = output_tokens / duration
-            if self.last_call_tps > self.peak_tps:
-                self.peak_tps = self.last_call_tps
-        self.last_updated_monotonic = time.monotonic()
+        with self._lock:
+            self.call_count += 1
+            self.total_output_tokens += output_tokens
+            self.total_input_tokens += input_tokens
+            self.total_duration += duration
+            self.last_call_output_tokens = output_tokens
+            self.last_call_input_tokens = input_tokens
+            self.last_call_duration = duration
+            if duration > 0:
+                self.last_call_tps = output_tokens / duration
+                if self.last_call_tps > self.peak_tps:
+                    self.peak_tps = self.last_call_tps
+            self.last_updated_monotonic = time.monotonic()
 
     @property
     def total_tokens(self) -> int:
@@ -456,6 +493,61 @@ class _SessionTPS:
         if n >= 1_000:
             return f"{n / 1_000:.1f}K"
         return str(n)
+
+
+def _evaluate_alert(state: _SessionTPS, tps: float, session_id: str) -> None:
+    """Evaluate TPS against threshold and manage alert state transitions."""
+    if _ALERT_CONFIG["threshold"] is None:
+        if len(state.cold_start_samples) < _ALERT_CONFIG["cold_start_calls"]:
+            state.cold_start_samples.append(tps)
+            if len(state.cold_start_samples) >= _ALERT_CONFIG["cold_start_calls"]:
+                mean_baseline = sum(state.cold_start_samples) / len(state.cold_start_samples)
+                state.alert_threshold = mean_baseline * _ALERT_CONFIG["cold_start_factor"]
+            return
+    else:
+        state.alert_threshold = _ALERT_CONFIG["threshold"]
+
+    state.recent_tps_samples.append(tps)
+    if len(state.recent_tps_samples) > _ALERT_CONFIG["eval_window"]:
+        state.recent_tps_samples = state.recent_tps_samples[-_ALERT_CONFIG["eval_window"]:]
+
+    if len(state.recent_tps_samples) < _ALERT_CONFIG["eval_window"]:
+        return
+
+    threshold = state.alert_threshold
+    if threshold <= 0:
+        return
+
+    rolling_mean = sum(state.recent_tps_samples) / len(state.recent_tps_samples)
+    if rolling_mean < threshold:
+        if state.alert_state in ("idle", "resolved"):
+            state.alert_state = "firing"
+            state.alert_fired_at = time.time()
+            _emit_alert(state, session_id, tps)
+    elif state.alert_state == "firing":
+        state.alert_state = "resolved"
+        state.alert_resolved_at = time.time()
+        _emit_alert(state, session_id, tps)
+
+
+def _emit_alert(state: _SessionTPS, session_id: str, tps: float) -> None:
+    """Fire the tps_alert hook with the current alert payload."""
+    if _ALERT_HOOK_MANAGER is None:
+        return
+    payload = {
+        "session_id": session_id,
+        "state": state.alert_state,
+        "tps": tps,
+        "threshold": state.alert_threshold,
+        "timestamp": time.time(),
+    }
+    try:
+        if hasattr(_ALERT_HOOK_MANAGER, "invoke_hook"):
+            _ALERT_HOOK_MANAGER.invoke_hook("tps_alert", **payload)
+        elif callable(_ALERT_HOOK_MANAGER):
+            _ALERT_HOOK_MANAGER("tps_alert", **payload)
+    except Exception:
+        logger.debug("tps-counter: alert hook invocation failed", exc_info=True)
 
 
 def _extract_provider(model: str) -> str:
@@ -630,16 +722,17 @@ def _on_post_api_request(**kwargs: Any) -> None:
 
     state = _get_session(session_id)
     model = kwargs.get("model", "") or ""
+    provider = kwargs.get("provider", "") or _extract_provider(model)
     with _STATE_LOCK:
         state.record(output_tokens, duration, input_tokens)
+        tps_val = output_tokens / duration if duration > 0 else 0.0
+        _evaluate_alert(state, tps_val, session_id)
         # Write-through to SQLite
         _persist_state(session_id, state)
         # Record per-call event
-        tps_val = output_tokens / duration if duration > 0 else 0.0
         if _STORE is not None:
-            provider_val = _extract_provider(model)
             try:
-                _STORE.record_event(session_id, model, provider_val, input_tokens, output_tokens, duration, tps_val)
+                _STORE.record_event(session_id, model, provider, input_tokens, output_tokens, duration, tps_val)
             except Exception as exc:
                 logger.debug("tps-counter: event recording failed: %s", exc)
         # Per-model tracking
@@ -647,7 +740,6 @@ def _on_post_api_request(**kwargs: Any) -> None:
             model_state = _get_model(session_id, model)
             model_state.record(output_tokens, duration)
         # Per-provider tracking
-        provider = _extract_provider(model)
         provider_state = _get_provider(session_id, provider)
         provider_state.record(output_tokens, duration)
         # Update Prometheus metrics (inside lock for consistent snapshot)
@@ -666,8 +758,8 @@ def _on_post_api_request(**kwargs: Any) -> None:
             except Exception:
                 pass
 
-    # LRU eviction safety net
-    _evict_if_needed()
+    # Retention safety net
+    _evict_if_needed(current_session_id=session_id)
 
     # Expose TPS snapshot for status bar integration
     try:
@@ -676,20 +768,29 @@ def _on_post_api_request(**kwargs: Any) -> None:
         if cli is not None:
             agent = getattr(cli, "agent", None)
             if agent is not None:
+                privacy_policy = _get_privacy_policy()
                 snapshot: Dict[str, Any] = {
+                    "session_id": _redact_identifier("session_id", session_id, privacy_policy),
+                    "model": _redact_identifier("model", model, privacy_policy),
+                    "provider": _redact_identifier("provider", provider, privacy_policy),
                     "last_tps": state.last_call_tps,
                     "avg_tps": state.avg_tps,
                     "peak_tps": state.peak_tps,
                     "output_tokens": state.total_output_tokens,
                     "input_tokens": state.total_input_tokens,
                     "total_tokens": state.total_tokens,
+                    "updated_at": time.time(),
+                    "updated_monotonic": state.last_updated_monotonic,
+                    "alert_state": state.alert_state,
+                    "alert_threshold": state.alert_threshold,
+                    "alert_indicator": "⚠ TPS ALERT" if state.alert_state == "firing" else "",
                 }
                 # Include per-model breakdown if available
                 with _STATE_LOCK:
                     session_models = _MODELS.get(session_id, {})
                     if session_models:
                         snapshot["models"] = {
-                            m: {
+                            _redact_identifier("model", m, privacy_policy): {
                                 "avg_tps": ms.avg_tps,
                                 "peak_tps": ms.peak_tps,
                                 "calls": ms.call_count,
@@ -701,7 +802,7 @@ def _on_post_api_request(**kwargs: Any) -> None:
                     session_providers = _PROVIDERS.get(session_id, {})
                     if session_providers:
                         snapshot["providers"] = {
-                            p: {
+                            _redact_identifier("provider", p, privacy_policy): {
                                 "avg_tps": ps.avg_tps,
                                 "peak_tps": ps.peak_tps,
                                 "calls": ps.call_count,
@@ -814,18 +915,36 @@ def _stop_api_server() -> None:
         _API_SERVER = None
 
 
+def _on_tps_alert(**kwargs: Any) -> None:
+    """Stub handler so downstream plugins can subscribe to tps_alert."""
+    return None
+
+
 def _on_session_end(**kwargs: Any) -> None:
-    """Hook callback: clean up session state when a session ends."""
+    """Hook callback: clean up in-memory session state when a session ends."""
     session_id = kwargs.get("session_id", "")
     if not session_id:
         logger.debug("tps-counter: on_session_end called without session_id")
         return
-    _cleanup_session(session_id)
+    _cleanup_session(session_id, delete_persistent=False)
 
 
 def register(ctx: Any) -> None:
     """Plugin entry point — called by Hermes plugin loader."""
-    global _STORE, _prometheus_enabled
+    global _STORE, _prometheus_enabled, _ALERT_HOOK_MANAGER
+
+    tps_threshold_env = os.environ.get("TPS_THRESHOLD")
+    if tps_threshold_env is not None:
+        try:
+            _ALERT_CONFIG["threshold"] = float(tps_threshold_env)
+        except (TypeError, ValueError):
+            pass
+    tps_eval_window_env = os.environ.get("TPS_EVAL_WINDOW")
+    if tps_eval_window_env is not None:
+        try:
+            _ALERT_CONFIG["eval_window"] = max(1, int(tps_eval_window_env))
+        except (TypeError, ValueError):
+            pass
 
     # Load merged config (defaults < TOML < env vars < ctx overrides)
     cfg = get_config(ctx)
@@ -844,6 +963,8 @@ def register(ctx: Any) -> None:
 
     ctx.register_hook("post_api_request", _on_post_api_request)
     ctx.register_hook("on_session_end", _on_session_end)
+    ctx.register_hook("tps_alert", _on_tps_alert)
+    _ALERT_HOOK_MANAGER = getattr(ctx, "plugin_manager", None) or getattr(ctx, "invoke_hook", None)
     logger.info("tps-counter plugin registered")
 
     # Optionally start the REST API server
@@ -1049,7 +1170,17 @@ def get_tps_stats(session_id: str) -> Dict[str, Any]:
     with _STATE_LOCK:
         state = _SESSIONS.get(session_id)
     if state is None:
-        return {"calls": 0, "avg_tps": 0, "last_tps": 0, "peak_tps": 0, "total_output_tokens": 0, "total_input_tokens": 0, "total_tokens": 0}
+        return _AbsentStats({
+            "calls": 0,
+            "avg_tps": 0,
+            "last_tps": 0,
+            "peak_tps": 0,
+            "total_output_tokens": 0,
+            "total_input_tokens": 0,
+            "total_tokens": 0,
+            "alert_state": "idle",
+            "alert_threshold": 0.0,
+        })
     return {
         "calls": state.call_count,
         "avg_tps": round(state.avg_tps, 1),
@@ -1060,6 +1191,8 @@ def get_tps_stats(session_id: str) -> Dict[str, Any]:
         "total_tokens": state.total_tokens,
         "total_duration": round(state.total_duration, 2),
         "session_duration": round(time.time() - state.created_at, 2),
+        "alert_state": state.alert_state,
+        "alert_threshold": state.alert_threshold,
     }
 
 
@@ -1103,35 +1236,75 @@ def get_provider_stats(session_id: str) -> Dict[str, Dict[str, Any]]:
         }
 
 
-def _cleanup_session(session_id: str) -> None:
-    """Remove all in-memory state for a session (session + model + provider data)."""
+def _cleanup_session(session_id: str, *, delete_persistent: bool = True) -> None:
+    """Remove all in-memory state for a session and optionally delete persistence."""
     with _STATE_LOCK:
         _SESSIONS.pop(session_id, None)
         _MODELS.pop(session_id, None)
         _PROVIDERS.pop(session_id, None)
+    if delete_persistent and _STORE is not None:
+        try:
+            _STORE.delete(session_id)
+        except Exception as exc:
+            logger.debug("tps-counter: DB cleanup failed for %s: %s", session_id, exc)
     logger.debug("tps-counter: cleaned up session %s", session_id[:8])
 
 
-def _evict_if_needed() -> None:
-    """Evict the least-recently-active in-memory session if over max_sessions."""
-    max_sessions = get_config().max_sessions
-    oldest_id = None
+def _evict_if_needed(current_session_id: str | None = None) -> None:
+    """Apply opportunistic in-memory retention after writes."""
+    policy = _get_retention_policy()
+    if not policy.enabled:
+        max_sessions = get_config().max_sessions
+        stale_cutoff = None
+    else:
+        max_sessions = policy.max_sessions
+        stale_cutoff = (
+            time.monotonic() - policy.session_ttl_seconds
+            if policy.session_ttl_seconds is not None
+            else None
+        )
+
+    evicted_ids: List[str] = []
     with _STATE_LOCK:
-        if len(_SESSIONS) <= max_sessions:
+        if stale_cutoff is not None:
+            for sid, sess in list(_SESSIONS.items()):
+                if sid == current_session_id:
+                    continue
+                if getattr(sess, "last_updated_monotonic", 0.0) < stale_cutoff:
+                    _SESSIONS.pop(sid, None)
+                    _MODELS.pop(sid, None)
+                    _PROVIDERS.pop(sid, None)
+                    evicted_ids.append(sid)
+
+        if max_sessions is None:
             return
-        oldest_id = min(
-            _SESSIONS,
-            key=lambda sid: getattr(
-                _SESSIONS[sid],
-                "last_updated_monotonic",
-                _SESSIONS[sid].turn_start_time,
-            ),
-        )
-        _SESSIONS.pop(oldest_id, None)
-        _MODELS.pop(oldest_id, None)
-        _PROVIDERS.pop(oldest_id, None)
-        logger.debug(
-            "tps-counter: LRU evicted session %s (over %d limit)",
-            oldest_id[:8],
-            max_sessions,
-        )
+
+        while len(_SESSIONS) > max_sessions:
+            candidates = [sid for sid in _SESSIONS if sid != current_session_id]
+            if not candidates:
+                candidates = list(_SESSIONS)
+            oldest_id = min(
+                candidates,
+                key=lambda sid: getattr(
+                    _SESSIONS[sid],
+                    "last_updated_monotonic",
+                    _SESSIONS[sid].turn_start_time,
+                ),
+            )
+            _SESSIONS.pop(oldest_id, None)
+            _MODELS.pop(oldest_id, None)
+            _PROVIDERS.pop(oldest_id, None)
+            evicted_ids.append(oldest_id)
+            logger.debug(
+                "tps-counter: evicted session %s (retention limit %d)",
+                oldest_id[:8],
+                max_sessions,
+            )
+
+    for oldest_id in evicted_ids:
+        if _STORE is None:
+            continue
+        try:
+            _STORE.delete(oldest_id)
+        except Exception as exc:
+            logger.debug("tps-counter: DB eviction failed for %s: %s", oldest_id, exc)

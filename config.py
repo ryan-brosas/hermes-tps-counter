@@ -38,6 +38,8 @@ _ENV_FIELD_MAP: Dict[str, str] = {
     "API_HOST": "api_host",
     "API_PORT": "api_port",
     "PROMETHEUS_ENABLED": "prometheus_enabled",
+    "PROMETHEUS_LEGACY_SESSION_LABELS": "prometheus_legacy_session_labels",
+    "PROMETHEUS_LABEL_CARDINALITY_CAP": "prometheus_label_cardinality_cap",
     "API_ENABLED": "api_enabled",
     "REQUESTS_PER_MINUTE": "requests_per_minute",
     "BURST_SIZE": "burst_size",
@@ -68,6 +70,12 @@ class TPSConfig:
 
     prometheus_enabled: bool = False
     """Whether Prometheus metrics endpoint is enabled."""
+
+    prometheus_legacy_session_labels: bool = False
+    """Whether to emit legacy Prometheus series labeled by raw session_id."""
+
+    prometheus_label_cardinality_cap: int = 50
+    """Max distinct model/provider label values admitted before overflow handling."""
 
     api_enabled: bool = False
     """Whether the REST API server is enabled."""
@@ -221,6 +229,9 @@ def _load_from_ctx(ctx: Any) -> Dict[str, Any]:
         "retention_days": "retention_days",
         "requests_per_minute": "requests_per_minute",
         "burst_size": "burst_size",
+        "prometheus_enabled": "prometheus_enabled",
+        "prometheus_legacy_session_labels": "prometheus_legacy_session_labels",
+        "prometheus_label_cardinality_cap": "prometheus_label_cardinality_cap",
     }
     for ctx_key, field_name in direct_keys.items():
         if ctx_key in raw:
@@ -275,6 +286,12 @@ def _validate(config: TPSConfig) -> None:
     if config.burst_size < 1:
         logger.warning("tps-counter config: burst_size=%d is < 1, clamping to 1", config.burst_size)
         config.burst_size = 1
+    if config.prometheus_label_cardinality_cap < 1:
+        logger.warning(
+            "tps-counter config: prometheus_label_cardinality_cap=%d is < 1, clamping to 1",
+            config.prometheus_label_cardinality_cap,
+        )
+        config.prometheus_label_cardinality_cap = 1
 
 
 def get_config(ctx: Any = None, *, config_path: Optional[Path] = None) -> TPSConfig:

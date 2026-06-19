@@ -386,18 +386,17 @@ def _init_metrics() -> None:
 _init_metrics()
 
 
-def _admit_label(seen: Set[str], name: str) -> bool:
+def _admit_label(seen: Set[str] | str, name: str) -> bool:
     """Check if a label value should be admitted (below cardinality cap).
 
-    If the value is already seen, it's admitted. If new and below cap,
-    it's added and admitted. If new and at cap, it's rejected (overflow).
-
-    Returns True if the label should be used, False if it should overflow.
+    Supports both call styles present in this module: aggregate gauges pass the
+    concrete tracking set, while histogram helpers pass a label-kind string.
     """
-    if name in seen:
+    admitted = _admitted_labels.setdefault(seen, set()) if isinstance(seen, str) else seen
+    if name in admitted:
         return True
-    if len(seen) < _label_cardinality_cap:
-        seen.add(name)
+    if len(admitted) < _label_cardinality_cap:
+        admitted.add(name)
         return True
     return False
 
