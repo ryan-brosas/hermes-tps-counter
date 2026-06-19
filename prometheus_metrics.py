@@ -386,18 +386,21 @@ def _init_metrics() -> None:
 _init_metrics()
 
 
-def _admit_label(seen: Set[str], name: str) -> bool:
+def _admit_label(label_name_or_seen: str | Set[str], value: str) -> bool:
     """Check if a label value should be admitted (below cardinality cap).
 
-    If the value is already seen, it's admitted. If new and below cap,
-    it's added and admitted. If new and at cap, it's rejected (overflow).
-
-    Returns True if the label should be used, False if it should overflow.
+    Accepts either a label name (managed through `_admitted_labels`) or an explicit
+    mutable set used by older call sites.
     """
-    if name in seen:
+    admitted = (
+        label_name_or_seen
+        if isinstance(label_name_or_seen, set)
+        else _admitted_labels.setdefault(label_name_or_seen, set())
+    )
+    if value in admitted:
         return True
-    if len(seen) < _label_cardinality_cap:
-        seen.add(name)
+    if len(admitted) < _label_cardinality_cap:
+        admitted.add(value)
         return True
     return False
 
