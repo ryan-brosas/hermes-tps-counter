@@ -83,6 +83,8 @@ class TestSchemaMigration:
             }
             conn.close()
             assert "idx_call_events_session_time" in indexes
+            assert "idx_call_events_created_at" in indexes
+            assert "idx_session_tps_updated_at" in indexes
         finally:
             store.close()
 
@@ -349,6 +351,172 @@ class TestConcurrentEventWrites:
 
 
 # ------------------------------------------------------------------
+# Export store methods
+# ------------------------------------------------------------------
+
+
+class TestExportEvents:
+    def test_export_events_empty(self, store):
+        """Empty DB returns empty list."""
+        assert store.export_events() == []
+
+    def test_export_events_returns_seeded_data(self, store):
+        """Records events and exports them with correct fields."""
+        store.record_event("s1", "gpt-4", "openai", 100, 200, 2.0, 100.0)
+        store.record_event("s2", "claude", "anthropic", 50, 100, 1.0, 100.0)
+        result = store.export_events()
+        assert len(result) == 2
+        for e in result:
+            assert "id" in e
+            assert "session_id" in e
+            assert "model" in e
+            assert "provider" in e
+            assert "input_tokens" in e
+            assert "output_tokens" in e
+            assert "duration" in e
+            assert "tps" in e
+            assert "created_at" in e
+
+    def test_export_events_with_since_filter(self, store):
+        """Only events after the since timestamp are returned."""
+        now = datetime.now(timezone.utc)
+        old = (now - timedelta(hours=2)).isoformat()
+        recent = (now - timedelta(minutes=5)).isoformat()
+
+        with store._lock:
+            store._conn.execute(
+                "INSERT INTO call_events (session_id, model, provider, input_tokens, output_tokens, duration, tps, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                ("s1", "m1", "p1", 10, 20, 1.0, 20.0, old),
+            )
+            store._conn.execute(
+                "INSERT INTO call_events (session_id, model, provider, input_tokens, output_tokens, duration, tps, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                ("s1", "m1", "p1", 30, 40, 2.0, 20.0, recent),
+            )
+            store._conn.commit()
+
+        since = (now - timedelta(hours=1)).isoformat()
+        result = store.export_events(since=since)
+        assert len(result) == 1
+        assert result[0]["output_tokens"] == 40
+
+    def test_export_events_with_session_id_filter(self, store):
+        """Only events for the requested session are returned before LIMIT."""
+        for idx in range(5):
+            store.record_event(f"other-{idx}", "m1", "p1", 10, 20, 1.0, 20.0)
+        store.record_event("target", "m1", "p1", 30, 40, 2.0, 20.0)
+
+        result = store.export_events(session_id="target", limit=1)
+
+        assert len(result) == 1
+        assert result[0]["session_id"] == "target"
+
+    def test_export_events_with_until_filter(self, store):
+        """Only events before the until timestamp are returned."""
+        now = datetime.now(timezone.utc)
+        old = (now - timedelta(hours=2)).isoformat()
+        recent = (now - timedelta(minutes=5)).isoformat()
+
+        with store._lock:
+            store._conn.execute(
+                "INSERT INTO call_events (session_id, model, provider, input_tokens, output_tokens, duration, tps, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                ("s1", "m1", "p1", 10, 20, 1.0, 20.0, old),
+            )
+            store._conn.execute(
+                "INSERT INTO call_events (session_id, model, provider, input_tokens, output_tokens, duration, tps, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                ("s1", "m1", "p1", 30, 40, 2.0, 20.0, recent),
+            )
+            store._conn.commit()
+
+        until = (now - timedelta(hours=1)).isoformat()
+        result = store.export_events(until=until)
+        assert len(result) == 1
+        assert result[0]["output_tokens"] == 20
+
+    def test_export_events_respects_limit(self, store):
+        """Limit caps the number of returned rows."""
+        for i in range(10):
+            store.record_event("s1", "m1", "p1", i * 10, i * 20, 1.0, float(i * 20))
+        result = store.export_events(limit=5)
+        assert len(result) == 5
+
+    def test_export_events_max_limit_clamped(self, store):
+        """max_limit overrides an excessive limit value."""
+        for i in range(10):
+            store.record_event("s1", "m1", "p1", i * 10, i * 20, 1.0, float(i * 20))
+        result = store.export_events(limit=999, max_limit=5)
+        assert len(result) == 5
+
+    def test_export_events_cross_session(self, store):
+        """Exports events from multiple sessions."""
+        store.record_event("s1", "gpt-4", "openai", 100, 200, 2.0, 100.0)
+        store.record_event("s2", "claude", "anthropic", 50, 100, 1.0, 100.0)
+        store.record_event("s3", "gemini", "google", 80, 160, 1.5, 106.7)
+        result = store.export_events()
+        assert len(result) == 3
+        session_ids = {e["session_id"] for e in result}
+        assert session_ids == {"s1", "s2", "s3"}
+
+
+class TestExportSessions:
+    def test_export_sessions_empty(self, store):
+        """Empty DB returns empty list."""
+        assert store.export_sessions() == []
+
+    def test_export_sessions_returns_seeded_data(self, store):
+        """Saves sessions and exports them with correct fields."""
+        store.save("s1", {"call_count": 1, "total_output_tokens": 100,
+                          "total_input_tokens": 50, "total_duration": 2.0,
+                          "peak_tps": 50.0, "last_call_tps": 50.0, "avg_tps": 50.0})
+        store.save("s2", {"call_count": 3, "total_output_tokens": 300,
+                          "total_input_tokens": 150, "total_duration": 6.0,
+                          "peak_tps": 60.0, "last_call_tps": 55.0, "avg_tps": 50.0})
+        result = store.export_sessions()
+        assert len(result) == 2
+        for s in result:
+            assert "session_id" in s
+            assert "call_count" in s
+            assert "total_output_tokens" in s
+            assert "total_input_tokens" in s
+            assert "updated_at" in s
+
+    def test_export_sessions_with_session_ids_filter(self, store):
+        """Filters to requested sessions only."""
+        store.save("s1", {"call_count": 1, "total_output_tokens": 100,
+                          "total_input_tokens": 50, "total_duration": 2.0,
+                          "peak_tps": 50.0, "last_call_tps": 50.0, "avg_tps": 50.0})
+        store.save("s2", {"call_count": 3, "total_output_tokens": 300,
+                          "total_input_tokens": 150, "total_duration": 6.0,
+                          "peak_tps": 60.0, "last_call_tps": 55.0, "avg_tps": 50.0})
+        store.save("s3", {"call_count": 2, "total_output_tokens": 200,
+                          "total_input_tokens": 100, "total_duration": 4.0,
+                          "peak_tps": 55.0, "last_call_tps": 50.0, "avg_tps": 50.0})
+        result = store.export_sessions(session_ids=["s1", "s3"])
+        assert len(result) == 2
+        ids = {s["session_id"] for s in result}
+        assert ids == {"s1", "s3"}
+
+    def test_export_sessions_respects_limit(self, store):
+        """Limit caps the number of returned rows."""
+        for i in range(10):
+            store.save(f"s{i}", {"call_count": i, "total_output_tokens": i * 100,
+                                 "total_input_tokens": i * 50, "total_duration": float(i),
+                                 "peak_tps": float(i * 10), "last_call_tps": float(i * 10),
+                                 "avg_tps": float(i * 10)})
+        result = store.export_sessions(limit=5)
+        assert len(result) == 5
+
+    def test_export_sessions_max_limit_clamped(self, store):
+        """max_limit overrides an excessive limit value."""
+        for i in range(10):
+            store.save(f"s{i}", {"call_count": i, "total_output_tokens": i * 100,
+                                 "total_input_tokens": i * 50, "total_duration": float(i),
+                                 "peak_tps": float(i * 10), "last_call_tps": float(i * 10),
+                                 "avg_tps": float(i * 10)})
+        result = store.export_sessions(limit=999, max_limit=3)
+        assert len(result) == 3
+
+
+# ------------------------------------------------------------------
 # REST API endpoints
 # ------------------------------------------------------------------
 
@@ -407,6 +575,34 @@ class TestEventsEndpoint:
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["events"]) == 1
+
+
+class TestExportHistoryEndpoint:
+    @pytest.fixture
+    def client(self, store):
+        from api import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app(store)
+        return TestClient(app)
+
+    def test_export_history_rejects_limit_above_hard_cap(self, client):
+        resp = client.get("/api/v1/export/history?limit=1001")
+
+        assert resp.status_code == 422
+        assert "exceeds maximum 1000" in resp.json()["detail"]
+
+    def test_export_history_filters_events_before_limit(self, client, store):
+        for idx in range(5):
+            store.record_event(f"other-{idx}", "m1", "p1", 10, 20, 1.0, 20.0)
+        store.record_event("target", "m1", "p1", 30, 40, 2.0, 20.0)
+
+        resp = client.get("/api/v1/export/history?session_id=target&limit=1")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["metadata"]["event_count"] == 1
+        assert data["events"][0]["session_id"] == "target"
 
 
 class TestTrendsEndpoint:

@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS session_tps (
     avg_tps             REAL    NOT NULL DEFAULT 0.0,
     updated_at          TEXT    NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_session_tps_updated_at
+    ON session_tps (updated_at);
 """
 
 _UPSERT = """
@@ -80,6 +83,9 @@ CREATE TABLE IF NOT EXISTS call_events (
 
 CREATE INDEX IF NOT EXISTS idx_call_events_session_time
     ON call_events (session_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_call_events_created_at
+    ON call_events (created_at);
 """
 
 _INSERT_EVENT = """
@@ -122,6 +128,29 @@ _AGGREGATE_SINCE = " AND created_at >= ?"
 _AGGREGATE_GROUP = " GROUP BY {};"
 
 _DELETE_EXPIRED_EVENTS = "DELETE FROM call_events WHERE created_at < ?;"
+
+# -- Export queries (cross-session, bounded) --
+
+_EXPORT_EVENTS_BASE = """
+SELECT id, session_id, model, provider, input_tokens, output_tokens, duration, tps, created_at
+FROM call_events WHERE 1=1
+"""
+
+_EXPORT_EVENTS_SINCE = " AND created_at >= ?"
+_EXPORT_EVENTS_UNTIL = " AND created_at <= ?"
+_EXPORT_EVENTS_SESSION_ID = " AND session_id = ?"
+_EXPORT_EVENTS_ORDER = " ORDER BY created_at DESC LIMIT ?"
+
+_EXPORT_SESSIONS_BASE = """
+SELECT session_id, call_count, total_output_tokens, total_input_tokens,
+       total_duration, peak_tps, last_call_tps, avg_tps, updated_at
+FROM session_tps WHERE 1=1
+"""
+
+_EXPORT_SESSIONS_IDS_PLACEHOLDER = " AND session_id IN ({})"
+_EXPORT_SESSIONS_SINCE = " AND updated_at >= ?"
+_EXPORT_SESSIONS_UNTIL = " AND updated_at <= ?"
+_EXPORT_SESSIONS_ORDER = " ORDER BY updated_at DESC LIMIT ?;"
 
 
 class PersistentSessionStore:
@@ -522,6 +551,87 @@ class PersistentSessionStore:
         except Exception as exc:
             logger.warning("tps-counter: event_count failed: %s", exc)
             return 0
+
+    # ------------------------------------------------------------------
+    # Export API (bounded, cross-session)
+    # ------------------------------------------------------------------
+
+    def export_events(
+        self,
+        session_id: Optional[str] = None,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+        limit: int = 100,
+        max_limit: int = 1000,
+    ) -> List[Dict[str, Any]]:
+        """Export call events across all sessions with bounded SQL.
+
+        Returns at most ``min(limit, max_limit)`` rows ordered by created_at
+        descending.  Does **not** call ``load_all()`` — uses direct bounded SQL.
+        """
+        if self._conn is None:
+            return []
+        effective_limit = max(1, min(limit, max_limit))
+        sql = _EXPORT_EVENTS_BASE
+        params: list = []
+        if session_id:
+            sql += _EXPORT_EVENTS_SESSION_ID
+            params.append(session_id)
+        if since:
+            sql += _EXPORT_EVENTS_SINCE
+            params.append(since)
+        if until:
+            sql += _EXPORT_EVENTS_UNTIL
+            params.append(until)
+        sql += _EXPORT_EVENTS_ORDER
+        params.append(effective_limit)
+        try:
+            with self._lock:
+                cur = self._conn.execute(sql, params)
+                rows = cur.fetchall()
+            return [self._event_row_to_dict(row) for row in rows]
+        except Exception as exc:
+            logger.warning("tps-counter: export_events failed: %s", exc)
+            return []
+
+    def export_sessions(
+        self,
+        session_ids: Optional[List[str]] = None,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+        limit: int = 100,
+        max_limit: int = 1000,
+    ) -> List[Dict[str, Any]]:
+        """Export session TPS rows with bounded SQL.
+
+        Optionally filters by a list of session IDs, a time window on
+        ``updated_at``, and an enforced row limit.
+        """
+        if self._conn is None:
+            return []
+        effective_limit = max(1, min(limit, max_limit))
+        sql = _EXPORT_SESSIONS_BASE
+        params: list = []
+        if session_ids:
+            placeholders = ", ".join("?" for _ in session_ids)
+            sql += _EXPORT_SESSIONS_IDS_PLACEHOLDER.format(placeholders)
+            params.extend(session_ids)
+        if since:
+            sql += _EXPORT_SESSIONS_SINCE
+            params.append(since)
+        if until:
+            sql += _EXPORT_SESSIONS_UNTIL
+            params.append(until)
+        sql += _EXPORT_SESSIONS_ORDER
+        params.append(effective_limit)
+        try:
+            with self._lock:
+                cur = self._conn.execute(sql, params)
+                rows = cur.fetchall()
+            return [self._row_to_dict(row) for row in rows]
+        except Exception as exc:
+            logger.warning("tps-counter: export_sessions failed: %s", exc)
+            return []
 
     def close(self) -> None:
         """Clean shutdown of the DB connection."""

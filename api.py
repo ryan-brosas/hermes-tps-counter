@@ -7,6 +7,8 @@ started as a background thread from the plugin's register() entry point.
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import logging
 import threading
 import time
@@ -166,6 +168,24 @@ class TrendResponse(BaseModel):
     session_id: str
     models: Dict[str, Dict[str, Any]]
     providers: Dict[str, Dict[str, Any]]
+
+
+class ExportMetadata(BaseModel):
+    generated_at: str
+    filters: Dict[str, Any]
+    session_count: int
+    event_count: int
+    format: str
+
+
+class ExportResponse(BaseModel):
+    metadata: ExportMetadata
+    sessions: List[Dict[str, Any]]
+    events: List[Dict[str, Any]]
+
+
+_DEFAULT_EXPORT_LIMIT = 100
+_HARD_EXPORT_LIMIT = 1000
 
 
 # ---------------------------------------------------------------------------
@@ -422,6 +442,101 @@ def create_app(
                 status_code=404, detail=f"No events found for session '{session_id}'"
             )
         return TrendResponse(session_id=session_id, models=models, providers=providers)
+
+    @app.get("/api/v1/export/history", response_model=ExportResponse)
+    def export_history(
+        session_id: Optional[str] = None,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+        limit: int = _DEFAULT_EXPORT_LIMIT,
+        format: str = "json",
+    ) -> Any:
+        """Bounded historical export for offline analysis and dashboard import.
+
+        Returns session TPS summaries and per-call events within explicit bounds.
+        Every request is bounded by limit (default 100, max 1000).
+        """
+        if store is None:
+            raise HTTPException(status_code=503, detail="Database not available")
+
+        # Validate limit
+        if limit <= 0:
+            raise HTTPException(
+                status_code=422,
+                detail="limit must be a positive integer",
+            )
+        if limit > _HARD_EXPORT_LIMIT:
+            raise HTTPException(
+                status_code=422,
+                detail=f"limit {limit} exceeds maximum {_HARD_EXPORT_LIMIT}",
+            )
+
+        # Validate format
+        if format not in ("json", "csv"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported format '{format}'. Use 'json' or 'csv'.",
+            )
+
+        effective_limit = min(limit, _HARD_EXPORT_LIMIT)
+        filters: Dict[str, Any] = {"limit": effective_limit}
+        if session_id:
+            filters["session_id"] = session_id
+        if since:
+            filters["since"] = since
+        if until:
+            filters["until"] = until
+
+        # Fetch sessions
+        session_ids = [session_id] if session_id else None
+        sessions = store.export_sessions(
+            session_ids=session_ids,
+            since=since,
+            until=until,
+            limit=effective_limit,
+            max_limit=_HARD_EXPORT_LIMIT,
+        )
+
+        events = store.export_events(
+            session_id=session_id,
+            since=since,
+            until=until,
+            limit=effective_limit,
+            max_limit=_HARD_EXPORT_LIMIT,
+        )
+
+        metadata = ExportMetadata(
+            generated_at=datetime.now(timezone.utc).isoformat(),
+            filters=filters,
+            session_count=len(sessions),
+            event_count=len(events),
+            format=format,
+        )
+
+        if format == "csv":
+            output = io.StringIO()
+            writer = csv.writer(output)
+            # Write events as CSV (flatten metadata into header comments)
+            if events:
+                fieldnames = list(events[0].keys())
+                writer.writerow(fieldnames)
+                for row in events:
+                    writer.writerow([row.get(f, "") for f in fieldnames])
+            else:
+                writer.writerow(["id", "session_id", "model", "provider",
+                                 "input_tokens", "output_tokens", "duration",
+                                 "tps", "created_at"])
+            return Response(
+                content=output.getvalue(),
+                media_type="text/csv",
+                headers={"Content-Disposition": "attachment; filename=export_history.csv"},
+            )
+
+        return ExportResponse(
+            metadata=metadata,
+            sessions=sessions,
+            events=events,
+        )
 
     @app.get("/metrics")
     def metrics():
